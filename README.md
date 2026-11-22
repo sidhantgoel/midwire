@@ -37,7 +37,9 @@ default user or password of its own.
 Open **http://midwire.local** once you are on the same network as the Pi,
 and log in with user name `admin`, password `admin`. The page offers to
 change that password after the first login; do so before leaving the Pi on
-a network you share with others. There are three ways to get there:
+a network you share with others. **https://midwire.local** works too: the
+Pi creates its own certificate on first start, so your browser shows a
+warning once that you have to accept. There are three ways to get there:
 
 | How | What happens |
 |---|---|
