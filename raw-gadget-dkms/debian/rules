@@ -1,0 +1,18 @@
+#!/usr/bin/make -f
+
+# 2025.12.13+midwire1 -> 2025.12.13: the DKMS module version is the date of
+# the pinned raw-gadget commit, without our packaging suffix.
+MODULE_VERSION := $(shell dpkg-parsechangelog -S Version | sed 's/+.*//')
+
+%:
+	dh $@
+
+# Nothing to compile at package build time; DKMS builds on the target.
+override_dh_auto_build override_dh_auto_install override_dh_auto_clean:
+
+override_dh_install:
+	dh_install src/Makefile src/raw_gadget.c src/raw_gadget.h \
+		usr/src/raw-gadget-$(MODULE_VERSION)
+
+override_dh_dkms:
+	dh_dkms -V $(MODULE_VERSION)

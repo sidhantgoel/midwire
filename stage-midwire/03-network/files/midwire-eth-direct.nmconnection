@@ -1,0 +1,22 @@
+# Ethernet, fallback: a cable straight to a computer, with no DHCP server.
+# Midwire takes 10.42.1.1 and hands the computer an address itself
+# (method=shared runs a DHCP server and NAT on this interface).
+# Only used after midwire-eth-dhcp has failed: see that file.
+[connection]
+id=midwire-eth-direct
+uuid=6d1d7700-0000-4000-8000-000000000002
+type=ethernet
+autoconnect-priority=-10
+interface-name=eth0
+
+[ethernet]
+
+[ipv4]
+address1=10.42.1.1/24
+method=shared
+
+[ipv6]
+addr-gen-mode=default
+method=link-local
+
+[proxy]

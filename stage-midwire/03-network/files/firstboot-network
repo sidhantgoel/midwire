@@ -1,0 +1,122 @@
+#!/bin/bash
+# First boot: create this device's Wi-Fi hotspot profile, "midwire-hotspot".
+#
+# It cannot be baked into the image because the network name and password
+# are different on every device. The web UI edits the profile later by name.
+#
+# Optional settings come from /boot/firmware/midwire-hotspot.txt, a text file
+# the user can create on the SD card's boot partition before first boot:
+#   SSID=MyMidwire
+#   PASSWORD=at-least-8-characters
+#   COUNTRY=GB
+set -euo pipefail
+
+CONF=${MIDWIRE_FIRSTBOOT_CONF:-/etc/midwire/firstboot.conf}
+SEED=${MIDWIRE_HOTSPOT_SEED:-/boot/firmware/midwire-hotspot.txt}
+DONE=${MIDWIRE_FIRSTBOOT_DONE:-/var/lib/midwire/firstboot-network.done}
+SYSFS=${MIDWIRE_SYSFS:-/sys}
+SERIAL_FILE=${MIDWIRE_SERIAL_FILE:-/proc/device-tree/serial-number}
+
+HOTSPOT_PRIORITY=-10
+HOTSPOT_DEFAULT_PASSWORD=
+WIFI_COUNTRY=
+if [ -r "$CONF" ]; then
+	# shellcheck source=/dev/null
+	. "$CONF"
+fi
+
+log() { echo "midwire-firstboot: $*"; }
+
+# seed_get KEY: value of KEY=value in the seed file, or nothing. The file
+# is parsed, never sourced: it sits on a FAT partition anyone can edit.
+seed_get() {
+	[ -r "$SEED" ] || return 0
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$SEED" | head -n 1 | tr -d '\r' | sed 's/[[:space:]]*$//'
+}
+
+if [ ! -e "$SYSFS/class/net/wlan0" ]; then
+	log "no wlan0, not creating a hotspot"
+	exit 0
+fi
+
+# --- Network name: Midwire-XXXX, unique per device --------------------------
+suffix=$(tr -d ':\n' < "$SYSFS/class/net/wlan0/address" 2>/dev/null | tail -c 4 || true)
+if [ ${#suffix} -ne 4 ]; then
+	suffix=$(tr -d '\0\n' < "$SERIAL_FILE" 2>/dev/null | tail -c 4 || true)
+fi
+if [ ${#suffix} -ne 4 ]; then
+	suffix=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')
+fi
+suffix=$(printf '%s' "$suffix" | tr '[:lower:]' '[:upper:]')
+
+ssid=$(seed_get SSID)
+if [ -z "$ssid" ] || [ ${#ssid} -gt 32 ]; then
+	ssid="Midwire-$suffix"
+fi
+
+# --- Password ----------------------------------------------------------------
+password=$(seed_get PASSWORD)
+password_source=seed
+if [ ${#password} -lt 8 ] || [ ${#password} -gt 63 ]; then
+	[ -z "$password" ] || log "PASSWORD in $SEED must be 8 to 63 characters, ignoring it"
+	password=$HOTSPOT_DEFAULT_PASSWORD
+	password_source=default
+fi
+if [ ${#password} -lt 8 ] || [ ${#password} -gt 63 ]; then
+	# 12 base32 characters = 60 bits, written as xxxx-xxxx-xxxx.
+	raw=$(head -c 16 /dev/urandom | base32 | tr -d '=\n' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
+	password="${raw:0:4}-${raw:4:4}-${raw:8:4}"
+	password_source=generated
+fi
+
+# --- Regulatory country ------------------------------------------------------
+# Raspberry Pi OS keeps Wi-Fi switched off until a country is set.
+country=$(seed_get COUNTRY | tr '[:lower:]' '[:upper:]')
+current_country=$(raspi-config nonint get_wifi_country 2>/dev/null || true)
+if [ -z "$country" ] && [ -z "$current_country" ]; then
+	country=$WIFI_COUNTRY
+fi
+if [[ $country =~ ^[A-Z]{2}$ ]] && [ "$country" != "$current_country" ]; then
+	log "setting Wi-Fi country to $country"
+	raspi-config nonint do_wifi_country "$country" || log "could not set Wi-Fi country"
+elif [ -z "$current_country" ]; then
+	# No country known. The hotspot below is pinned to 2.4 GHz channel 6,
+	# which every regulatory domain allows, so switch the radio on anyway.
+	log "no Wi-Fi country set; hotspot stays on 2.4 GHz channel 6"
+	rfkill unblock wlan || true
+fi
+nmcli radio wifi on || true
+
+# --- The profile -------------------------------------------------------------
+if nmcli -t -f NAME connection show | grep -qx midwire-hotspot; then
+	log "midwire-hotspot already exists, leaving it alone"
+else
+	nmcli connection add type wifi ifname wlan0 con-name midwire-hotspot ssid "$ssid" \
+		connection.autoconnect yes connection.autoconnect-priority "$HOTSPOT_PRIORITY" \
+		wifi.mode ap wifi.band bg wifi.channel 6 \
+		wifi-sec.key-mgmt wpa-psk wifi-sec.proto rsn \
+		wifi-sec.pairwise ccmp wifi-sec.group ccmp wifi-sec.psk "$password" \
+		ipv4.method shared ipv4.addresses 10.42.0.1/24 ipv6.method link-local
+	log "created midwire-hotspot, network name $ssid"
+
+	# Tell the user what was chosen, in the one place they can read without
+	# a network connection: the boot partition. A password the user put there
+	# themselves is removed again instead.
+	case $password_source in
+	generated)
+		{
+			echo "# Midwire Wi-Fi hotspot, created on first boot."
+			echo "# Change the password in the web UI (http://midwire.local),"
+			echo "# then delete this file."
+			echo "SSID=$ssid"
+			echo "PASSWORD=$password"
+		} > "$SEED" || log "could not write $SEED"
+		;;
+	seed)
+		sed -i '/^[[:space:]]*PASSWORD[[:space:]]*=/d' "$SEED" || true
+		;;
+	esac
+fi
+
+mkdir -p "$(dirname "$DONE")"
+touch "$DONE"

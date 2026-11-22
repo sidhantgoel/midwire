@@ -1,0 +1,10 @@
+# build.sh working directory (pi-gen clone, collected .debs) and output
+/build/
+/deploy/
+
+# Local package overrides: see debs/README.md
+/debs/*.deb
+
+# Fetched from xairy/raw-gadget by raw-gadget-dkms/build.sh
+/raw-gadget-dkms/src/raw_gadget.c
+/raw-gadget-dkms/src/raw_gadget.h

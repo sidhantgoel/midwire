@@ -1,0 +1,16 @@
+[Unit]
+Description=Midwire first boot: create the Wi-Fi hotspot profile
+ConditionPathExists=!/var/lib/midwire/firstboot-network.done
+Wants=NetworkManager.service
+# After cloud-init has applied Raspberry Pi Imager's settings, so a Wi-Fi
+# country chosen there is already in place.
+After=NetworkManager.service systemd-rfkill.service cloud-config.service
+RequiresMountsFor=/boot/firmware
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/midwire/firstboot-network
+StateDirectory=midwire
+
+[Install]
+WantedBy=multi-user.target

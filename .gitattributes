@@ -1,0 +1,6 @@
+# Everything here runs on Linux. Keep LF line endings even on a Windows
+# checkout with core.autocrlf=true, or the stage scripts and debian/rules
+# break.
+* text=auto eol=lf
+*.png binary
+*.pgp binary

@@ -1,0 +1,26 @@
+# Ethernet, first choice: be a normal DHCP client.
+#
+# If no DHCP server answers within dhcp-timeout seconds the connection fails
+# (may-fail=false), and with autoconnect-retries=1 NetworkManager then gives
+# up on this profile and activates midwire-eth-direct. Unplugging and
+# re-plugging the cable makes it try this profile again.
+[connection]
+id=midwire-eth-dhcp
+uuid=6d1d7700-0000-4000-8000-000000000001
+type=ethernet
+autoconnect-priority=10
+autoconnect-retries=1
+interface-name=eth0
+
+[ethernet]
+
+[ipv4]
+dhcp-timeout=30
+may-fail=false
+method=auto
+
+[ipv6]
+addr-gen-mode=default
+method=auto
+
+[proxy]

@@ -1,0 +1,23 @@
+Source: raw-gadget-dkms
+Section: kernel
+Priority: optional
+Maintainer: Sidhant Goel <sidhant@hexcod.in>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-sequence-dkms,
+Standards-Version: 4.7.0
+Homepage: https://github.com/xairy/raw-gadget
+Rules-Requires-Root: no
+
+Package: raw-gadget-dkms
+Architecture: all
+Depends:
+ ${misc:Depends},
+Description: USB Raw Gadget kernel module (DKMS)
+ Raw Gadget lets a userspace program act as a USB device by handling every
+ USB request itself. It is part of the mainline Linux kernel
+ (CONFIG_USB_RAW_GADGET) but the Raspberry Pi OS kernels are built without
+ it. This package builds the module with DKMS for every installed kernel
+ and rebuilds it when a kernel is updated.
+ .
+ The source is the out-of-tree copy from xairy/raw-gadget.

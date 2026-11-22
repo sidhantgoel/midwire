@@ -1,0 +1,20 @@
+{
+  "os_list": [
+    {
+      "name": "Midwire",
+      "description": "USB proxy appliance for Raspberry Pi 4 and 5, based on Raspberry Pi OS Lite (64-bit)",
+      "url": "",
+      "extract_size": 0,
+      "extract_sha256": "",
+      "image_download_size": 0,
+      "image_download_sha256": "",
+      "release_date": "",
+      "init_format": "cloudinit-rpi",
+      "devices": [
+        "pi5-64bit",
+        "pi4-64bit"
+      ],
+      "capabilities": []
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# DKMS and the headers for both kernels the image boots: v8 on the Pi 4,
+# 2712 on the Pi 5. The header metapackages keep DKMS working after kernel
+# updates.
+dkms
+linux-headers-rpi-v8
+linux-headers-rpi-2712

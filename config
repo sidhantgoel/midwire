@@ -1,0 +1,19 @@
+# pi-gen config for Midwire. build.sh appends the versioned file names
+# (IMG_FILENAME, ARCHIVE_FILENAME) and copies the result into pi-gen.
+
+IMG_NAME=midwire
+PI_GEN_RELEASE="Midwire"
+RELEASE=trixie
+TARGET_HOSTNAME=midwire
+
+# Raspberry Pi OS Lite stages, then ours. stage2's own image export is
+# switched off by build.sh, so only the Midwire image is produced.
+STAGE_LIST="stage0 stage1 stage2 stage-midwire"
+
+DEPLOY_COMPRESSION=xz
+COMPRESSION_LEVEL=6
+
+# No user, password or SSH access is baked in. The user sets these with
+# Raspberry Pi Imager's customisation, or on the console at first boot.
+ENABLE_SSH=0
+ENABLE_CLOUD_INIT=1

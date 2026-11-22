@@ -1,0 +1,55 @@
+name: Build image
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  image:
+    # Native arm64, so pi-gen needs no emulation.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "MIDWIRE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "MIDWIRE_VERSION=dev-${GITHUB_SHA::8}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          df -h /
+
+      - name: Build
+        run: ./build.sh
+
+      - name: Raspberry Pi Imager list
+        run: scripts/make-os-list.sh "$MIDWIRE_VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: midwire-${{ env.MIDWIRE_VERSION }}
+          path: |
+            deploy/*.img.xz
+            deploy/*.sha256
+            deploy/*.info
+            deploy/os_list_midwire.json
+          compression-level: 0
+
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            deploy/*.img.xz
+            deploy/*.sha256
+            deploy/*.info
+            deploy/os_list_midwire.json

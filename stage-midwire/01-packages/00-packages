@@ -1,0 +1,8 @@
+# NetworkManager "shared" connections (the hotspot and the direct Ethernet
+# fallback) need dnsmasq-base for DHCP and nftables for NAT.
+network-manager
+dnsmasq-base
+nftables
+rfkill
+# So the device answers as midwire.local.
+avahi-daemon
