@@ -12,8 +12,11 @@ It is Raspberry Pi OS Lite (64-bit, Debian trixie) plus:
   built without it, so this repo packages it with DKMS (`raw-gadget-dkms/`).
 - The USB-C port switched to device mode, and network settings that make
   the web page reachable without any setup.
+- `midwire-base` (`midwire-base/` in this repo): the updater behind the web
+  page's Updates tab, and the apt source it installs from.
 
-This repository only builds the image. It is a thin wrapper around
+This repository builds the image and publishes the packages devices update
+from. It is a thin wrapper around
 [pi-gen](https://github.com/RPi-Distro/pi-gen), the tool that builds
 Raspberry Pi OS itself.
 
@@ -96,9 +99,9 @@ machine.
 What `build.sh` does:
 
 1. Clones pi-gen at the commit pinned in `versions.env` into `build/pi-gen`.
-2. Collects three `.deb` packages (`scripts/fetch-debs.sh`): usb-proxy and
-   midwire-web-ui from their GitHub releases, and raw-gadget-dkms built from
-   the pinned raw-gadget commit.
+2. Collects four `.deb` packages (`scripts/fetch-debs.sh`): usb-proxy and
+   midwire-web-ui from their GitHub releases, and raw-gadget-dkms and
+   midwire-base built from this repo.
 3. Copies `stage-midwire/` and `config` into pi-gen and runs its Docker
    build with the stages `stage0 stage1 stage2 stage-midwire`.
 
@@ -120,7 +123,7 @@ Put a `.deb` in `debs/` and it is used instead of the pinned release. See
 | Step | Files | What it adds |
 |---|---|---|
 | `00-raw-gadget` | DKMS, kernel headers, `raw-gadget-dkms` | Builds `raw_gadget` for both kernels in the image (Pi 4 and Pi 5 boot different ones). DKMS rebuilds it after kernel updates. |
-| `01-packages` | usb-proxy, midwire-web-ui | Installs both and enables the web UI. usb-proxy itself is started by the web UI, never at boot. |
+| `01-packages` | usb-proxy, midwire-web-ui, midwire-base | Installs them and enables the web UI. usb-proxy itself is started by the web UI, never at boot. midwire-base adds the updater, the apt source and the udev rule below. |
 | `02-gadget-port` | `config.txt`, `modules-load.d` | `dtoverlay=dwc2,dr_mode=peripheral` and loading `raw_gadget` at boot. |
 | `03-network` | NetworkManager profiles, first-boot service | The two Ethernet profiles, and the service that creates the hotspot. |
 
@@ -141,22 +144,92 @@ country, the profile priority) are in
 Network interfaces on USB devices are left alone. Phones, drones and modems
 often present a network adapter next to their other interfaces, and the Pi
 would otherwise bring it up while the device waits to be proxied, putting
-the device under test on a network with the Pi. A udev rule
-(`/etc/udev/rules.d/84-midwire-usb-net.rules`) marks such interfaces as
-unmanaged, so NetworkManager keeps them down. Delete that file if you want
-to use a USB Ethernet or Wi-Fi adapter with the Pi itself.
+the device under test on a network with the Pi. A udev rule in the
+`midwire-base` package (`/usr/lib/udev/rules.d/84-midwire-usb-net.rules`)
+marks such interfaces as unmanaged, so NetworkManager keeps them down. To
+use a USB Ethernet or Wi-Fi adapter with the Pi itself, switch the rule off
+with an empty file of the same name in `/etc/udev/rules.d/` and reboot.
+
+## Updates
+
+A device updates itself from the web page's Updates tab. Only Midwire's own
+four packages are upgraded: `midwire-base`, `midwire-web-ui`, `usb-proxy`
+and `raw-gadget-dkms`. Raspberry Pi OS and the kernel are left alone.
+
+How it works on the device, all of it from the `midwire-base` package:
+
+| Piece | What it does |
+|---|---|
+| `/etc/apt/sources.list.d/midwire.sources` | Points apt at this project's package repository. |
+| `/usr/share/keyrings/midwire-archive-keyring.gpg` | The public key that repository must be signed with. apt refuses anything else. |
+| `/usr/lib/midwire/update check` | Downloads the package list and records which packages have a newer version. Run daily by `midwire-update-check.timer`, and when the page asks. |
+| `/usr/lib/midwire/update install` | Upgrades those packages. Run by `midwire-update-install.service` when the user presses the button. |
+| `/var/lib/midwire/update.json` | What the page shows: versions, the result of the last check and of the last installation. |
+| polkit rule | Lets the web UI start those two services, and nothing else. It cannot choose packages or commands. |
+
+The device needs internet access for this, so it has to be on Ethernet or
+joined to a Wi-Fi network, not only hosting its hotspot.
+
+A device flashed from the 0.1.0 image has no updater. Bring it up to date
+once by hand, then it updates from the page:
+
+    sudo apt install ./midwire-base_<version>_all.deb ./midwire-web-ui_<version>_all.deb
+
+### The package repository
+
+The repository is an ordinary signed apt repository whose files are the
+assets of this repo's GitHub release tagged `apt`. `scripts/make-apt-repo.sh`
+builds and signs it, and `scripts/publish-apt-repo.sh` uploads it. The
+`apt` release is never marked "latest": Raspberry Pi Imager follows
+`releases/latest`, which must stay an image release.
+
+### Signing key
+
+The repository is signed with one key, created once:
+
+    scripts/make-signing-key.sh /some/folder/outside/this/repo
+
+That writes two files:
+
+| File | Where it goes |
+|---|---|
+| `midwire-base/keys/midwire-archive-keyring.asc`, the public key | Committed. It is built into `midwire-base`, and every device checks updates against it. |
+| `midwire-apt-signing-PRIVATE-key.asc`, the private key | The GitHub Actions secret `APT_SIGNING_KEY` (repository Settings, Secrets and variables, Actions). Keep one offline copy and delete the rest. |
+
+Without the public key `midwire-base` cannot be built, and without the
+secret the Publish workflow stops with a message saying so. Publishing also
+checks that the two are a pair before it uploads anything.
+
+The private key is what lets someone push software to every device, so it
+must never be committed. The script refuses to write it inside this
+repository and refuses to replace an existing key: devices trust the key
+already published, and one that is lost or leaked means every device has to
+be given a new one by hand.
 
 ## Releases
 
-Pushing a tag `v<version>` runs `.github/workflows/build.yml`, which builds
-the image on a GitHub arm64 runner and attaches to the release:
+`.github/workflows/build.yml` has two jobs:
 
-- `midwire-<version>-arm64.img.xz` and its `.sha256`
-- `os_list_midwire.json`, the file Raspberry Pi Imager reads
+1. **packages** collects the four `.deb` files and publishes them to the
+   `apt` release. Devices see the new versions on their next check.
+2. **image** builds the image from exactly those files and attaches to the
+   release:
+   - `midwire-<version>-arm64.img.xz` and its `.sha256`
+   - `os_list_midwire.json`, the file Raspberry Pi Imager reads
 
-Before tagging, make sure the versions in `versions.env` exist as releases
-of usb-proxy and midwire-web-ui. To update pi-gen, raw-gadget or either
-package, change `versions.env`.
+Pushing a tag `v<version>` runs both. Running the workflow by hand
+publishes the packages only, unless you tick "image": that is how to ship
+an update to devices without making a new image.
+
+To release a new version of anything, change `versions.env` (and
+`midwire-base/debian/changelog` for midwire-base). Before publishing, make
+sure the versions of usb-proxy and midwire-web-ui named there exist as
+releases of those repositories.
+
+A local `./build.sh` installs `midwire-base` into the image too, and the
+image then runs `apt-get update` against the published repository while it
+is being built. So the `apt` release has to exist before an image can be
+built; `build.sh` checks and says so.
 
 ## License
 

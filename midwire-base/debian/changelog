@@ -1,0 +1,8 @@
+midwire-base (0.2.0) unstable; urgency=medium
+
+  * First release. Adds the apt source and key for Midwire's packages, the
+    updater behind the web UI's Updates page with a daily check, and the
+    udev rule that keeps NetworkManager off network interfaces on USB
+    devices (moved here from the image so existing devices get it).
+
+ -- Sidhant Goel <sidhant@hexcod.in>  Sun, 22 Nov 2026 22:00:00 +0000

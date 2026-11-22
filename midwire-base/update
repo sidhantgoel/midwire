@@ -1,0 +1,420 @@
+#!/usr/bin/python3
+"""Checks for and installs Midwire updates. Run as root by systemd.
+
+    update check     refresh Midwire's own apt source and record which
+                     packages have a newer version
+    update install   refresh every apt source, upgrade the Midwire packages,
+                     then check again
+    update recover   put a stale status file back to "idle" (run by the
+                     units as ExecStopPost, in case this program was killed)
+
+Only the packages in MANAGED are ever upgraded. The operating system and the
+kernel are left alone; there is no general `apt upgrade` here.
+
+What the web UI reads is one JSON file, replaced atomically at every change:
+
+    {"state": "idle" | "checking" | "installing",
+     "checked": unix time of the last check attempt, or null,
+     "check_error": why the last check failed, or null,
+     "packages": [{"name", "installed", "available", "upgradable"}, ...],
+     "last_install": null | {"time", "ok", "message", "upgraded": [{"name", "from", "to"}]}}
+
+Exit status: `check` exits 0 once it has recorded a result, even when the
+result is "could not reach the repository" (a device on its own hotspot has
+no internet, and that is not a failure of the unit). `install` exits 1 when
+nothing could be installed or the installation failed. 2 is a usage error.
+
+Environment variables, for tests:
+
+    MIDWIRE_UPDATE_STATUS    path of the status file
+                             (default /var/lib/midwire/update.json; the lock
+                             file is this path plus ".lock")
+    MIDWIRE_UPDATE_SOURCES   path of Midwire's apt source file
+                             (default /etc/apt/sources.list.d/midwire.sources)
+
+MIDWIRE_UPDATE_SOURCES names the file that `check` refreshes on its own.
+Every other step (candidate versions, the full refresh, the upgrade) uses
+apt's normal configuration, so a test must put that file where apt reads it
+anyway: /etc/apt/sources.list.d/, under any name ending in .sources. The list
+of managed packages cannot be overridden.
+
+This file is replaced while it runs when midwire-base upgrades itself. That
+is safe because it is a single file using only the standard library: Python
+has read all of it before the first command runs.
+"""
+
+import fcntl
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+# Upgraded in this order. midwire-base first: it carries the apt source.
+MANAGED = ("midwire-base", "midwire-web-ui", "usb-proxy", "raw-gadget-dkms")
+
+STATUS = os.environ.get("MIDWIRE_UPDATE_STATUS", "/var/lib/midwire/update.json")
+SOURCES = os.environ.get("MIDWIRE_UPDATE_SOURCES", "/etc/apt/sources.list.d/midwire.sources")
+LOCK = STATUS + ".lock"
+
+APT_ENV = dict(
+    os.environ,
+    LC_ALL="C.UTF-8",
+    DEBIAN_FRONTEND="noninteractive",
+    APT_LISTCHANGES_FRONTEND="none",
+)
+# Plain output for the journal, and give up on a dead connection.
+APT_COMMON = [
+    "-q",
+    "-o", "Dpkg::Use-Pty=0",
+    "-o", "Acquire::Retries=1",
+    "-o", "Acquire::http::Timeout=20",
+    "-o", "Acquire::https::Timeout=20",
+]
+# dpkg statuses in which a version of the package is on the system.
+PRESENT = {"installed", "half-configured", "half-installed", "triggers-awaited", "triggers-pending"}
+
+
+class Terminated(SystemExit):
+    pass
+
+
+_shielded = False
+_term_pending = False
+
+
+def _on_signal(signum, _frame):
+    """Stop, unless dpkg is in the middle of installing: then finish first."""
+    global _term_pending
+    if _shielded:
+        _term_pending = True
+        say("Asked to stop. Finishing the package installation first.")
+    else:
+        raise Terminated(128 + signum)
+
+
+def say(message):
+    print(message, flush=True)
+
+
+def run(command):
+    """Runs a command, copying its output to ours. Returns (status, lines)."""
+    lines = []
+    try:
+        process = subprocess.Popen(
+            command, env=APT_ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, text=True, errors="replace",
+        )
+    except OSError as error:
+        say(f"Could not run {command[0]}: {error.strerror}")
+        return 127, [f"E: could not run {command[0]}: {error.strerror}"]
+    try:
+        for line in process.stdout:
+            line = line.rstrip("\n")
+            lines.append(line)
+            say("  " + line)
+        return process.wait(), lines
+    except BaseException:
+        # We are being stopped (see _on_signal): do not leave it running.
+        process.terminate()
+        raise
+
+
+# --- status file -------------------------------------------------------------
+
+
+def blank_status():
+    return {"state": "idle", "checked": None, "check_error": None, "packages": [], "last_install": None}
+
+
+def load_status():
+    status = blank_status()
+    try:
+        with open(STATUS, encoding="utf-8") as handle:
+            saved = json.load(handle)
+    except (OSError, ValueError):
+        return status
+    if isinstance(saved, dict):
+        for key in status:
+            if key in saved:
+                status[key] = saved[key]
+    return status
+
+
+def save_status(status):
+    directory = os.path.dirname(STATUS) or "."
+    os.makedirs(directory, mode=0o755, exist_ok=True)
+    temporary = f"{STATUS}.{os.getpid()}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(status, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, STATUS)
+
+
+def take_lock(wait):
+    """One check or install at a time. Returns the open lock file, or None if
+    someone else holds it and we were told not to wait."""
+    os.makedirs(os.path.dirname(LOCK) or ".", mode=0o755, exist_ok=True)
+    handle = open(LOCK, "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+# --- apt ---------------------------------------------------------------------
+
+
+def package_versions():
+    """Installed and candidate version of every managed package."""
+    installed = {}
+    query = subprocess.run(
+        ["dpkg-query", "-W", "-f", "${Package}\\t${db:Status-Status}\\t${Version}\\n", *MANAGED],
+        env=APT_ENV, capture_output=True, text=True,
+    )
+    for line in query.stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) == 3 and fields[1] in PRESENT and fields[2]:
+            installed[fields[0]] = fields[2]
+
+    candidates = {}
+    policy = subprocess.run(["apt-cache", "policy", *MANAGED], env=APT_ENV, capture_output=True, text=True)
+    current = None
+    for line in policy.stdout.splitlines():
+        if line and not line[0].isspace() and line.endswith(":"):
+            current = line[:-1]
+        elif current and line.strip().startswith("Candidate:"):
+            value = line.split(":", 1)[1].strip()
+            if value and value != "(none)":
+                candidates[current] = value
+
+    packages = []
+    for name in MANAGED:
+        have, offered = installed.get(name), candidates.get(name)
+        newer = False
+        if have and offered and have != offered:
+            newer = subprocess.run(["dpkg", "--compare-versions", offered, "gt", have]).returncode == 0
+        packages.append({"name": name, "installed": have, "available": offered, "upgradable": newer})
+    return packages
+
+
+# What apt says, sorted into the few things a user can act on. Checked in
+# this order: a bad signature also produces "failed to fetch" lines.
+SIGNATURE = ("signature", "no_pubkey", "badsig", "sqv", "openpgp", "is not signed", "isn't signed")
+MISMATCH = ("unexpected size", "hash sum mismatch", "size mismatch", "mirror sync in progress")
+CERTIFICATE = ("certificate",)
+NETWORK = ("could not resolve", "temporary failure", "could not connect", "unable to connect",
+           "connection refused", "connection failed", "connection reset", "unreachable", "timed out",
+           "timeout", "no route to host", "could not handshake")
+LOCKED = ("could not get lock", "unable to lock", "unable to acquire")
+MISSING = ("404", "not found", "does not have a release file")
+
+
+def explain(lines, otherwise):
+    """A plain sentence for the user out of apt's complaints. The page shows
+    it as it is; apt's own wording stays in the log."""
+    problems = [line.strip() for line in lines if line.lstrip().startswith(("E:", "Err:", "W:"))]
+    text = " ".join(problems).lower()
+
+    def has(words):
+        return any(word in text for word in words)
+
+    if has(SIGNATURE):
+        return "The update repository failed its signature check, so nothing from it will be installed."
+    if has(MISMATCH):
+        return ("The update repository's files do not match its signed list, so nothing from it will be "
+                "installed. It may be in the middle of being published: try again in a few minutes.")
+    if has(CERTIFICATE):
+        return ("Could not verify the update server's certificate. The Pi's clock may be wrong; it "
+                "corrects itself a little while after the Pi gets internet access.")
+    if has(NETWORK):
+        return "Could not reach the update server. Check that the Pi has an internet connection."
+    if has(LOCKED):
+        return "Another package operation is running on the Pi. Try again in a minute."
+    if has(MISSING):
+        return ("The update repository is not available right now. It may be in the middle of being "
+                "published: try again in a few minutes.")
+    detail = next((p for p in problems if p.startswith("E:")), "")[3:200].strip()
+    return f"{otherwise} apt reported: {detail}" if detail else f"{otherwise} See the log."
+
+
+def refresh_midwire_source():
+    """Downloads only Midwire's own package list, so a check does not depend
+    on the Debian mirrors. Returns None, or what went wrong."""
+    if not os.path.exists(SOURCES):
+        return f"The Midwire package source {SOURCES} is missing. Reinstall the midwire-base package."
+    status, lines = run([
+        "apt-get", "update", *APT_COMMON,
+        "--error-on=any",
+        "-o", f"Dir::Etc::sourcelist={SOURCES}",
+        "-o", "Dir::Etc::sourceparts=-",
+        # Without this apt deletes the downloaded lists of every other source.
+        "-o", "APT::Get::List-Cleanup=0",
+    ])
+    return None if status == 0 else explain(lines, "Could not refresh the package list.")
+
+
+def do_check(status, refresh=True, error=None, state="checking"):
+    status["state"] = state
+    save_status(status)
+    if refresh:
+        say("Checking the Midwire package repository.")
+        error = refresh_midwire_source()
+    if refresh or error:
+        status["checked"] = int(time.time())
+        status["check_error"] = error
+    status["packages"] = package_versions()
+    for package in status["packages"]:
+        if package["upgradable"]:
+            say(f"{package['name']}: {package['installed']} is installed, {package['available']} is available.")
+    if error:
+        say(f"Check failed: {error}")
+    elif not any(package["upgradable"] for package in status["packages"]):
+        say("Everything is up to date.")
+
+
+def join(items):
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def do_install(status):
+    global _shielded
+    status["state"] = "installing"
+    save_status(status)
+    result = {"time": int(time.time()), "ok": False, "message": "", "upgraded": []}
+    status["last_install"] = result
+    refresh_error = None
+    stopped = False
+    try:
+        # In case an earlier installation was cut short, e.g. by a power cut.
+        _shielded = True
+        run(["dpkg", "--configure", "-a", "--force-confdef", "--force-confold"])
+        _shielded = False
+        if _term_pending:
+            raise Terminated(143)
+
+        say("Checking the Midwire package repository.")
+        refresh_error = refresh_midwire_source()
+        if refresh_error:
+            result["message"] = f"{refresh_error} Nothing was installed."
+            return
+        say("Refreshing the other package sources.")
+        if run(["apt-get", "update", *APT_COMMON])[0] != 0:
+            # Midwire's own source is fresh; the others are only needed for
+            # dependencies, and their older lists usually still do.
+            say("Some other sources could not be refreshed. Continuing with the lists already downloaded.")
+
+        before = package_versions()
+        targets = [package["name"] for package in before if package["upgradable"]]
+        if not targets:
+            result.update(ok=True, message="Everything is already up to date.")
+            say(result["message"])
+            return
+
+        say(f"Upgrading {join(targets)}.")
+        _shielded = True
+        code, lines = run([
+            "apt-get", "install", "-y", *APT_COMMON,
+            "--only-upgrade", "--no-remove",
+            "-o", "DPkg::Lock::Timeout=120",
+            # Keep configuration files the user has edited.
+            "-o", "Dpkg::Options::=--force-confdef",
+            "-o", "Dpkg::Options::=--force-confold",
+            *targets,
+        ])
+        _shielded = False
+
+        after = {package["name"]: package["installed"] for package in package_versions()}
+        for package in before:
+            now = after.get(package["name"])
+            if now and now != package["installed"]:
+                result["upgraded"].append({"name": package["name"], "from": package["installed"], "to": now})
+        done = [f"{entry['name']} to {entry['to']}" for entry in result["upgraded"]]
+        if code == 0 and len(done) == len(targets):
+            result.update(ok=True, message=f"Updated {join(done)}.")
+        elif done:
+            result["message"] = (f"Updated {join(done)}, but the update did not finish "
+                                 f"(apt-get exited with status {code}). See the log.")
+        else:
+            result["message"] = "Nothing was updated. " + explain(lines, "The installation failed.")
+        say(result["message"])
+    except Terminated:
+        stopped = True
+        result["message"] = result["message"] or "The update was stopped before it finished."
+        raise
+    finally:
+        _shielded = False
+        result["time"] = int(time.time())
+        # Record the new versions. Skip the download if it just failed, or
+        # if we are being stopped.
+        do_check(status, refresh=refresh_error is None and not stopped and not _term_pending,
+                 error=refresh_error, state="installing")
+
+
+# --- commands ----------------------------------------------------------------
+
+
+def command_check():
+    lock = take_lock(wait=False)
+    if lock is None:
+        say("An update check or installation is already running. Not starting another.")
+        return 0
+    status = load_status()
+    try:
+        do_check(status)
+    finally:
+        status["state"] = "idle"
+        save_status(status)
+    return 0
+
+
+def command_install():
+    lock = take_lock(wait=False)
+    if lock is None:
+        say("Waiting for a running update check to finish.")
+        lock = take_lock(wait=True)
+    status = load_status()
+    try:
+        do_install(status)
+    finally:
+        status["state"] = "idle"
+        save_status(status)
+    return 0 if (status.get("last_install") or {}).get("ok") else 1
+
+
+def command_recover():
+    lock = take_lock(wait=False)
+    if lock is None:
+        return 0  # someone is working; the state is theirs
+    if not os.path.exists(STATUS):
+        return 0
+    status = load_status()
+    if status["state"] != "idle":
+        status["state"] = "idle"
+        save_status(status)
+    return 0
+
+
+COMMANDS = {"check": command_check, "install": command_install, "recover": command_recover}
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in COMMANDS:
+        print("usage: update check | install", file=sys.stderr)
+        return 2
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(signum, _on_signal)
+    if _term_pending:
+        return 143
+    code = COMMANDS[sys.argv[1]]()
+    return 143 if _term_pending else code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

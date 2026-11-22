@@ -1,0 +1,9 @@
+# Midwire's own packages: midwire-base, midwire-web-ui, usb-proxy and
+# raw-gadget-dkms. The web UI's Updates page installs from here.
+#
+# The repository is the set of files attached to the GitHub release tagged
+# "apt" in sidhantgoel/midwire, signed with the Midwire archive key.
+Types: deb
+URIs: https://github.com/sidhantgoel/midwire/releases/download/
+Suites: apt/
+Signed-By: /usr/share/keyrings/midwire-archive-keyring.gpg

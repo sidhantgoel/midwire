@@ -1,12 +1,57 @@
-name: Build image
+name: Publish
+
+# Two jobs. "packages" collects Midwire's four .debs and publishes them as
+# the apt repository that devices update from. "image" then builds the
+# image from those same files, so a released image and the repository
+# always hold the same packages.
+#
+#   Push a tag v1.2.3     both jobs: publish the packages, build the image
+#   Run by hand           publish the packages; tick "image" to build one too
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      image:
+        description: Also build the image (about 15 minutes)
+        type: boolean
+        default: false
 
 jobs:
+  packages:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect the packages
+        run: scripts/fetch-debs.sh build/debs
+
+      - name: Build the apt repository
+        env:
+          # The private half of midwire-base/keys/midwire-archive-keyring.asc.
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq apt-utils gnupg gpgv
+          scripts/make-apt-repo.sh build/debs build/repo
+
+      - name: Publish to the "apt" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/publish-apt-repo.sh build/repo/apt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs
+          path: build/debs/*.deb
+
   image:
+    needs: packages
+    if: github.ref_type == 'tag' || inputs.image
     # Native arm64, so pi-gen needs no emulation.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
@@ -14,6 +59,13 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      # debs/ overrides what build.sh would fetch or build: use exactly the
+      # files that were just published.
+      - uses: actions/download-artifact@v4
+        with:
+          name: debs
+          path: debs
 
       - name: Set version
         run: |

@@ -1,0 +1,33 @@
+Source: midwire-base
+Section: admin
+Priority: optional
+Maintainer: Sidhant Goel <sidhant@hexcod.in>
+Build-Depends:
+ debhelper-compat (= 13),
+ gnupg,
+Standards-Version: 4.7.0
+Homepage: https://github.com/sidhantgoel/midwire
+Rules-Requires-Root: no
+
+Package: midwire-base
+Architecture: all
+Depends:
+ apt,
+ ca-certificates,
+ midwire-web-ui (>= 0.2.0),
+ polkitd,
+ python3,
+ raw-gadget-dkms,
+ usb-proxy,
+ ${misc:Depends},
+Description: Midwire system configuration and updater
+ The parts of the Midwire USB proxy appliance that belong to the system
+ rather than to one program: the apt source and signing key for Midwire's
+ own packages, the updater that the web UI's Updates page drives, and the
+ rule that keeps NetworkManager off network interfaces on USB devices.
+ .
+ The updater upgrades only Midwire's packages (this one, midwire-web-ui,
+ usb-proxy and raw-gadget-dkms). The operating system is left alone. It
+ checks once a day and installs only when asked.
+ .
+ Installing this package pulls in the rest of Midwire.

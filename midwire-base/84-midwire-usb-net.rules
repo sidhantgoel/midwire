@@ -8,6 +8,7 @@
 # NetworkManager leaves it down, with no address. The Ethernet and Wi-Fi
 # built into the Pi 4 and Pi 5 are not USB devices and are not affected.
 #
-# To use a USB Ethernet or Wi-Fi adapter with the Pi itself, delete this
-# file and reboot.
+# To use a USB Ethernet or Wi-Fi adapter with the Pi itself, switch this rule
+# off with an empty file of the same name in /etc, then reboot:
+#   sudo touch /etc/udev/rules.d/84-midwire-usb-net.rules
 ACTION!="remove", SUBSYSTEM=="net", SUBSYSTEMS=="usb", ENV{NM_UNMANAGED}="1"

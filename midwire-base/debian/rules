@@ -1,0 +1,39 @@
+#!/usr/bin/make -f
+
+# The public half of the key the apt repository is signed with. It is not
+# in the repo until the key has been created: see README.md. build.sh copies
+# a test key here when MIDWIRE_ARCHIVE_KEY is set.
+KEY := keys/midwire-archive-keyring.asc
+KEYRING := build/midwire-archive-keyring.gpg
+GPG := GNUPGHOME=$(CURDIR)/build/gnupg gpg --batch --no-tty
+
+%:
+	dh $@
+
+# Turn the armored key into the binary keyring apt's Signed-By wants.
+override_dh_auto_build:
+	@test -s $(KEY) || { \
+		echo "midwire-base: $(KEY) is missing." >&2; \
+		echo "It is the public key of the Midwire apt repository. Create the key (README.md," >&2; \
+		echo "\"Signing key\") or set MIDWIRE_ARCHIVE_KEY to a public key file for a test build." >&2; \
+		exit 1; }
+	@! grep -q 'PRIVATE KEY' $(KEY) || { \
+		echo "midwire-base: $(KEY) contains a PRIVATE key. Only the public key belongs here." >&2; \
+		exit 1; }
+	mkdir -p build/gnupg && chmod 700 build/gnupg
+	$(GPG) --yes --dearmor -o $(KEYRING) $(KEY)
+	@$(GPG) --show-keys --with-colons $(KEYRING) | grep -q '^pub:' || { \
+		echo "midwire-base: $(KEY) holds no OpenPGP public key." >&2; exit 1; }
+	rm -rf build/gnupg
+
+override_dh_auto_clean:
+	rm -rf build
+
+execute_after_dh_install:
+	chmod 755 debian/midwire-base/usr/lib/midwire/update
+
+# Only the timer is enabled and started. The two services are started on
+# demand, and must never be stopped or restarted by this package's own
+# scripts: the install service is what is running them.
+override_dh_installsystemd:
+	dh_installsystemd midwire-update-check.timer

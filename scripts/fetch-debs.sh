@@ -1,10 +1,11 @@
 #!/bin/bash
-# Collect the three .debs the image installs into the given directory.
+# Collect the four .debs the image installs, and the apt repository
+# publishes, into the given directory.
 #
 # For each package, a matching file in debs/ at the repo root wins. That is
 # how to build with unreleased packages. Otherwise usb-proxy and
 # midwire-web-ui are downloaded from their pinned GitHub releases, and
-# raw-gadget-dkms is built from the pinned raw-gadget commit.
+# raw-gadget-dkms and midwire-base are built from this repo.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -57,6 +58,11 @@ local_override midwire-web-ui ||
 if ! local_override raw-gadget-dkms; then
 	echo "raw-gadget-dkms: building from raw-gadget $RAW_GADGET_COMMIT"
 	"$ROOT/raw-gadget-dkms/build-in-docker.sh" "$OUT"
+fi
+
+if ! local_override midwire-base; then
+	echo "midwire-base: building $MIDWIRE_BASE_VERSION"
+	"$ROOT/midwire-base/build-in-docker.sh" "$OUT"
 fi
 
 ls -l "$OUT"

@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily check for Midwire updates
+Documentation=https://github.com/sidhantgoel/midwire
+
+[Timer]
+# A few minutes after power-on, then once a day. The check only downloads
+# a small package list; nothing is installed until the user asks.
+OnBootSec=3min
+OnUnitActiveSec=24h
+RandomizedDelaySec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

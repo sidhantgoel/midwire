@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = configure ]; then
+	# Apply the rule for network interfaces on USB devices to what is
+	# plugged in now, not only after the next boot or re-plug.
+	if [ -d /run/udev ] && command -v udevadm >/dev/null 2>&1; then
+		udevadm control --reload || true
+		udevadm trigger --action=change --subsystem-match=net --property-match=ID_BUS=usb || true
+	fi
+fi
+
+#DEBHELPER#
+
+if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
+	# So the Updates page has something to show straight away. During an
+	# update the updater is already running and this exits at once.
+	systemctl start --no-block midwire-update-check.service || true
+fi

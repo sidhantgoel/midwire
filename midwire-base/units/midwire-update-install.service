@@ -1,0 +1,16 @@
+[Unit]
+Description=Install Midwire updates
+Documentation=https://github.com/sidhantgoel/midwire
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/midwire/update install
+# If the program is killed, do not leave "installing" in the status file.
+ExecStopPost=/usr/lib/midwire/update recover
+TimeoutStartSec=45min
+# Stopping this unit must not kill dpkg half-way through a package. Only the
+# updater itself is signalled; it lets a running installation finish first.
+KillMode=process
+TimeoutStopSec=20min

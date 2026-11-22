@@ -13,8 +13,9 @@ install -D -m 644 files/firstboot.conf "${ROOTFS_DIR}/etc/midwire/firstboot.conf
 install -D -m 644 files/midwire-firstboot.service \
 	"${ROOTFS_DIR}/etc/systemd/system/midwire-firstboot.service"
 
-# Keep NetworkManager off network interfaces that USB devices present.
-install -D -m 644 files/84-midwire-usb-net.rules 	"${ROOTFS_DIR}/etc/udev/rules.d/84-midwire-usb-net.rules"
+# The udev rule that keeps NetworkManager off network interfaces on USB
+# devices is in the midwire-base package (see 01-packages), so that devices
+# already in use get it through an update.
 
 on_chroot << EOF
 systemctl enable midwire-firstboot.service

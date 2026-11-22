@@ -6,8 +6,10 @@
 #   CONTINUE=1 ./build.sh      resume a failed build in the kept container
 #   MIDWIRE_VERSION=1.2.3 ./build.sh
 #   ASSEMBLE_ONLY=1 ./build.sh prepare build/pi-gen and stop before building
+#   SKIP_APT_REPO_CHECK=1 ./build.sh  do not check that the apt repository
+#                              the image points at has been published
 #
-# Needs Linux (or WSL2) with docker and git. See README.md.
+# Needs Linux (or WSL2) with docker, git and curl. See README.md.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
@@ -20,12 +22,13 @@ STAGE=$PIGEN/stage-midwire
 
 version=${MIDWIRE_VERSION:-}
 if [ -z "$version" ]; then
-	version=$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || true)
+	# Only version tags: the "apt" tag marks the package repository's release.
+	version=$(git -C "$ROOT" describe --tags --match 'v*' --always --dirty 2>/dev/null || true)
 	version=${version#v}
 	version=${version:-dev}
 fi
 
-for tool in docker git; do
+for tool in docker git curl; do
 	command -v "$tool" >/dev/null || { echo "build.sh: $tool is required" >&2; exit 1; }
 done
 case $BUILD in
@@ -73,6 +76,20 @@ touch "$PIGEN/stage2/SKIP_IMAGES"
 if [ "${ASSEMBLE_ONLY:-0}" = "1" ]; then
 	echo "== assembled $PIGEN, not building (ASSEMBLE_ONLY=1)"
 	exit 0
+fi
+
+# The image carries midwire-base's apt source, and pi-gen's last step runs
+# apt-get update inside the image. If the repository has never been
+# published, that fails at the very end of a long build, so check first.
+if [ "${SKIP_APT_REPO_CHECK:-0}" != "1" ]; then
+	repo_index=https://github.com/sidhantgoel/midwire/releases/download/apt/InRelease
+	if ! curl -fsSL --retry 2 -o /dev/null "$repo_index"; then
+		echo "build.sh: the Midwire apt repository is not reachable:" >&2
+		echo "  $repo_index" >&2
+		echo "The image build would fail in its last step. Publish the repository first" >&2
+		echo "(run the Publish workflow), or set SKIP_APT_REPO_CHECK=1 to try anyway." >&2
+		exit 1
+	fi
 fi
 
 echo "== pi-gen build"

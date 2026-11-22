@@ -1,0 +1,14 @@
+[Unit]
+Description=Check for Midwire updates
+Documentation=https://github.com/sidhantgoel/midwire
+# Wants, not Requires: a device on its own hotspot never gets online, and
+# the check should still run and say so.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/midwire/update check
+# If the program is killed, do not leave "checking" in the status file.
+ExecStopPost=/usr/lib/midwire/update recover
+TimeoutStartSec=10min
