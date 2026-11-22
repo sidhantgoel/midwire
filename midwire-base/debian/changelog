@@ -1,3 +1,12 @@
+midwire-base (0.3.0) unstable; urgency=medium
+
+  * Add the system helper behind the web UI's SSH settings: turn SSH on or
+    off, set a login user's password (creating the user when the device has
+    none) and add or remove that user's SSH keys. Reached over
+    /run/midwire/system.sock, which only the web UI's user may open.
+
+ -- Sidhant Goel <sidhant@hexcod.in>  Mon, 23 Nov 2026 00:30:00 +0000
+
 midwire-base (0.2.0) unstable; urgency=medium
 
   * First release. Adds the apt source and key for Midwire's packages, the

@@ -1,0 +1,19 @@
+[Unit]
+Description=Midwire system helper socket (SSH and login accounts for the web UI)
+Documentation=https://github.com/sidhantgoel/midwire
+
+[Socket]
+ListenStream=/run/midwire/system.sock
+# Only the web UI's service user may connect. That is the whole access
+# control: there is no polkit rule and nothing is passed on a command line.
+SocketUser=root
+SocketGroup=midwire-web-ui
+SocketMode=0660
+DirectoryMode=0755
+# One short-lived helper per request.
+Accept=yes
+MaxConnections=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

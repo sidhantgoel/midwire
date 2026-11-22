@@ -1,0 +1,15 @@
+[Unit]
+Description=Midwire system helper (one request from the web UI)
+Documentation=https://github.com/sidhantgoel/midwire
+# A request that turns SSH off must not be killed with the socket.
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/lib/midwire/system
+# The request arrives on the connection and the answer goes back on it.
+# What the helper logs goes to the journal.
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+SyslogIdentifier=midwire-system
+RuntimeMaxSec=120

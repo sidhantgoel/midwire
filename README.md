@@ -50,10 +50,11 @@ warning once that you have to accept. There are three ways to get there:
 | Ethernet straight to your computer | After about 30 seconds without an answer from a DHCP server, the Pi takes `10.42.1.1` and gives your computer an address. |
 | Wi-Fi hotspot | The Pi creates a network called `Midwire-XXXX` (the last four characters differ per device) and is at `10.42.0.1`. |
 
-The hotspot password is generated on the first boot and is different on
-every device. To find it, shut the Pi down, put the SD card in a computer
-and open `midwire-hotspot.txt` on the `bootfs` partition. To choose it
-yourself instead, create that file before the first boot:
+The hotspot's password is `midwire-setup` on every new device. The setup
+wizard on the first login asks you to change it, and the page keeps a
+reminder up until you do. To start with your own name and password instead,
+create `midwire-hotspot.txt` on the SD card's `bootfs` partition before the
+first boot:
 
     SSID=MyMidwire
     PASSWORD=at-least-8-characters
@@ -169,6 +170,28 @@ How it works on the device, all of it from the `midwire-base` package:
 
 The device needs internet access for this, so it has to be on Ethernet or
 joined to a Wi-Fi network, not only hosting its hotspot.
+
+## SSH and login accounts
+
+SSH is off on a new device, and the image has no login user unless you set
+one in Raspberry Pi Imager. Both can be changed from the web page's Settings
+tab, without taking the SD card out:
+
+- turn SSH on or off;
+- set the password of a login user, which creates the user if the device has
+  none (it is put in the `sudo` group, and `sudo` asks for that password);
+- add or remove SSH public keys for that user.
+
+The page refuses the last two while its own admin password is still the
+default or empty: with them, whoever can log in to the page can get a root
+shell on the Pi.
+
+The work is done by `/usr/lib/midwire/system` from the `midwire-base`
+package. It runs as root, one process per request, behind the socket
+`/run/midwire/system.sock`, which only the web UI's service user can open.
+It acts only on ordinary login users (never `root` or a service account),
+accepts only plain public keys (no options such as `command=`), and reads
+and writes `authorized_keys` as the user the file belongs to.
 
 A device flashed from the 0.1.0 image has no updater. Bring it up to date
 once by hand, then it updates from the page:

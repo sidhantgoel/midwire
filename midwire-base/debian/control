@@ -26,6 +26,10 @@ Description: Midwire system configuration and updater
  own packages, the updater that the web UI's Updates page drives, and the
  rule that keeps NetworkManager off network interfaces on USB devices.
  .
+ It also holds the helper behind the web UI's SSH settings: turning SSH on
+ or off, setting a login user's password and managing that user's SSH keys.
+ Only the web UI's service user can reach it, over a local socket.
+ .
  The updater upgrades only Midwire's packages (this one, midwire-web-ui,
  usb-proxy and raw-gadget-dkms). The operating system is left alone. It
  checks once a day and installs only when asked.

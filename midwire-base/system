@@ -1,0 +1,402 @@
+#!/usr/bin/python3
+"""SSH and login accounts, on behalf of the web UI's Settings page.
+
+Run as root by midwire-system@.service, once per connection to
+/run/midwire/system.sock. Only the web UI's service user may connect. One
+JSON object comes in on stdin, one goes out on stdout:
+
+    {"action": "status"}
+    {"action": "ssh", "enabled": true}
+    {"action": "set-password", "user": "pi", "password": "..."}
+    {"action": "add-key", "user": "pi", "key": "ssh-ed25519 AAAA... me@laptop"}
+    {"action": "remove-key", "user": "pi", "fingerprint": "SHA256:..."}
+
+    {"ok": true, ...}   or   {"ok": false, "error": "one sentence for the user"}
+
+What it will and will not do:
+
+  * It acts only on login users: uid 1000 to 59999 with a real shell. Never
+    root, never a service account.
+  * set-password creates the user first if, and only if, the system has no
+    login user at all (an image flashed without Raspberry Pi Imager's
+    customisation). The new user is in the sudo group; sudo asks for the
+    password that was just set.
+  * A key must be one plain public key. Options such as command="..." are
+    refused, and so is anything that is not a key type listed in KEY_TYPES.
+  * authorized_keys is read and written as the user it belongs to, not as
+    root, so a symlink in a home directory cannot point this program at a
+    file the user could not have touched anyway.
+
+Nothing here is logged except what was done and for whom. Passwords and keys
+are never printed.
+
+MIDWIRE_SYSTEM_ROOT, for tests only, is prepended to /etc/passwd and
+/etc/shadow lookups when set. It does not redirect the commands that are run.
+"""
+
+import base64
+import binascii
+import grp
+import hashlib
+import json
+import os
+import pwd
+import re
+import subprocess
+import sys
+
+MAX_REQUEST = 16 * 1024
+USER_NAME = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
+FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+KEY_TYPES = (
+    "ssh-ed25519",
+    "ssh-rsa",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "sk-ssh-ed25519@openssh.com",
+    "sk-ecdsa-sha2-nistp256@openssh.com",
+)
+NO_LOGIN_SHELLS = ("nologin", "false", "sync", "halt", "shutdown")
+# What Raspberry Pi OS gives its first user. Only groups that exist are used.
+NEW_USER_GROUPS = ("sudo", "adm", "dialout", "cdrom", "audio", "video", "plugdev", "users",
+                   "input", "render", "netdev", "gpio", "i2c", "spi")
+MAX_KEYS = 50
+
+
+class Refused(Exception):
+    """The request cannot be carried out. The message is shown to the user."""
+
+
+def log(message):
+    print(f"midwire-system: {message}", file=sys.stderr, flush=True)
+
+
+# --- users -------------------------------------------------------------------
+
+
+def login_users():
+    users = []
+    for entry in pwd.getpwall():
+        shell = os.path.basename(entry.pw_shell or "")
+        if 1000 <= entry.pw_uid < 60000 and shell not in NO_LOGIN_SHELLS:
+            users.append(entry)
+    return sorted(users, key=lambda e: e.pw_uid)
+
+
+def login_user(name):
+    if not isinstance(name, str) or not USER_NAME.match(name):
+        raise Refused("That is not a valid user name.")
+    for entry in login_users():
+        if entry.pw_name == name:
+            return entry
+    raise Refused(f"There is no login user called {name}.")
+
+
+def has_password(name):
+    try:
+        with open("/etc/shadow", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                fields = line.rstrip("\n").split(":")
+                if len(fields) > 1 and fields[0] == name:
+                    return bool(fields[1]) and not fields[1].startswith(("!", "*"))
+    except OSError:
+        pass
+    return False
+
+
+def in_group(entry, group_name):
+    try:
+        group = grp.getgrnam(group_name)
+    except KeyError:
+        return False
+    return entry.pw_gid == group.gr_gid or entry.pw_name in group.gr_mem
+
+
+# --- keys --------------------------------------------------------------------
+
+
+def parse_key(text):
+    """Checks that `text` is exactly one plain public key. Returns
+    (type, base64 blob, comment)."""
+    if not isinstance(text, str) or len(text) > 8192:
+        raise Refused("That is not an SSH public key.")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise Refused("Paste exactly one public key, on one line.")
+    fields = lines[0].split(None, 2)
+    if len(fields) < 2 or fields[0] not in KEY_TYPES:
+        # Also what refuses option prefixes such as command="...".
+        raise Refused("That is not an SSH public key. It should start with ssh-ed25519, ssh-rsa or ecdsa-sha2-.")
+    key_type, blob = fields[0], fields[1]
+    try:
+        raw = base64.b64decode(blob, validate=True)
+    except (binascii.Error, ValueError):
+        raise Refused("The key is damaged: its data is not valid base64.") from None
+    # The blob starts with its own type, length-prefixed. It must agree.
+    if len(raw) < 4 or raw[4:4 + int.from_bytes(raw[:4], "big")] != key_type.encode():
+        raise Refused("The key is damaged: its data does not match its type.")
+    if "PRIVATE" in text:
+        raise Refused("That looks like a private key. Paste the public key, the file ending in .pub.")
+    comment = fields[2] if len(fields) > 2 else ""
+    comment = "".join(ch for ch in comment if ch.isprintable())[:100]
+    return key_type, blob, comment
+
+
+def fingerprint(blob):
+    digest = hashlib.sha256(base64.b64decode(blob)).digest()
+    return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+
+
+def scan_keys(text):
+    """Keys in an authorized_keys file, each with the line it came from."""
+    found = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split()
+        for index, field in enumerate(fields[:-1]):
+            if field in KEY_TYPES:
+                try:
+                    found.append({
+                        "line": line,
+                        "type": field,
+                        "fingerprint": fingerprint(fields[index + 1]),
+                        "comment": " ".join(fields[index + 2:])[:100],
+                        # Options before the key type, e.g. command="...".
+                        "restricted": index > 0,
+                    })
+                except (binascii.Error, ValueError):
+                    pass
+                break
+    return found
+
+
+def keys_as_user():
+    """Runs as the user whose keys they are (see run_as). Reads a JSON
+    request on stdin: list, add or remove."""
+    request = json.loads(sys.stdin.read())
+    directory = os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".ssh")
+    path = os.path.join(directory, "authorized_keys")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read(1024 * 1024)
+    except FileNotFoundError:
+        text = ""
+    except OSError:
+        # For example a symlink to a file this user may not read.
+        raise Refused("The authorized_keys file of this user cannot be read. Check it on the device.") from None
+    keys = scan_keys(text)
+
+    if request["op"] == "add":
+        wanted = fingerprint(request["blob"])
+        if any(key["fingerprint"] == wanted for key in keys):
+            raise Refused("That key is already there.")
+        if len(keys) >= MAX_KEYS:
+            raise Refused("There are too many keys already. Remove one first.")
+        line = " ".join(part for part in (request["type"], request["blob"], request["comment"]) if part)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += line + "\n"
+        write_private(path, text)
+        keys = scan_keys(text)
+    elif request["op"] == "remove":
+        doomed = {key["line"] for key in keys if key["fingerprint"] == request["fingerprint"]}
+        if not doomed:
+            raise Refused("That key is not there any more.")
+        kept = [line for line in text.splitlines() if line not in doomed]
+        write_private(path, "".join(line + "\n" for line in kept))
+        keys = [key for key in keys if key["line"] not in doomed]
+    return [{k: key[k] for k in ("type", "fingerprint", "comment", "restricted")} for key in keys]
+
+
+def write_private(path, text):
+    temporary = f"{path}.{os.getpid()}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.replace(temporary, path)
+
+
+def run_as(entry, request):
+    """Runs keys_as_user() in a child process that has become that user."""
+    groups = [g.gr_gid for g in grp.getgrall() if entry.pw_name in g.gr_mem]
+    result = subprocess.run(
+        [sys.executable, os.path.abspath(__file__), "--keys-as-user"],
+        input=json.dumps(request), capture_output=True, text=True, timeout=30,
+        user=entry.pw_uid, group=entry.pw_gid, extra_groups=groups,
+        env={"PATH": "/usr/bin:/bin", "HOME": entry.pw_dir, "LC_ALL": "C.UTF-8"}, cwd="/",
+    )
+    try:
+        answer = json.loads(result.stdout)
+    except ValueError:
+        log(f"key helper for {entry.pw_name} failed: {result.stderr.strip()[:300]}")
+        raise Refused(f"Could not read or change the keys of {entry.pw_name}.") from None
+    if not answer.get("ok"):
+        raise Refused(answer.get("error") or "Could not change the keys.")
+    return answer["keys"]
+
+
+# --- actions -----------------------------------------------------------------
+
+
+def command(arguments, **options):
+    return subprocess.run(arguments, capture_output=True, text=True, timeout=60, **options)
+
+
+def ssh_state():
+    installed = os.path.exists("/usr/sbin/sshd")
+    enabled = installed and command(["systemctl", "is-enabled", "ssh.service"]).stdout.strip() == "enabled"
+    running = installed and command(["systemctl", "is-active", "ssh.service"]).stdout.strip() == "active"
+    return {"installed": installed, "enabled": enabled, "running": running}
+
+
+def do_status(_request):
+    users = []
+    for entry in login_users():
+        try:
+            keys = run_as(entry, {"op": "list"})
+        except Refused:
+            keys = []
+        users.append({
+            "name": entry.pw_name,
+            "has_password": has_password(entry.pw_name),
+            "sudo": in_group(entry, "sudo"),
+            "keys": keys,
+        })
+    return {"ssh": ssh_state(), "users": users}
+
+
+def do_ssh(request):
+    enabled = request.get("enabled")
+    if not isinstance(enabled, bool):
+        raise Refused("Say whether SSH should be on or off.")
+    if not os.path.exists("/usr/sbin/sshd"):
+        raise Refused("The SSH server (openssh-server) is not installed on this device.")
+    if enabled:
+        # Images are shipped without host keys; make any that are missing.
+        command(["ssh-keygen", "-A"])
+        result = command(["systemctl", "enable", "--now", "ssh.service"])
+    else:
+        command(["systemctl", "disable", "--now", "ssh.socket"])  # where socket activation is used
+        result = command(["systemctl", "disable", "--now", "ssh.service"])
+    if result.returncode != 0:
+        log(f"systemctl failed: {result.stderr.strip()[:300]}")
+        raise Refused(f"Could not turn SSH {'on' if enabled else 'off'}. See the midwire-system log.")
+    log(f"SSH turned {'on' if enabled else 'off'}")
+    return {"ssh": ssh_state()}
+
+
+def do_set_password(request):
+    name, password = request.get("user"), request.get("password")
+    if not isinstance(name, str) or not USER_NAME.match(name):
+        raise Refused("A user name starts with a letter and has only lower-case letters, digits and hyphens.")
+    if not isinstance(password, str) or not 8 <= len(password) <= 128:
+        raise Refused("Use a password of 8 to 128 characters.")
+    if any(not ch.isprintable() for ch in password):
+        raise Refused("The password contains a character that cannot be typed.")
+
+    created = False
+    existing = login_users()
+    if name not in [entry.pw_name for entry in existing]:
+        if existing:
+            raise Refused(f"There is no login user called {name}.")
+        try:
+            pwd.getpwnam(name)
+            raise Refused(f"The name {name} is taken by a system account. Choose another.")
+        except KeyError:
+            pass
+        groups = [g for g in NEW_USER_GROUPS if _group_exists(g)]
+        result = command(["useradd", "--create-home", "--shell", "/bin/bash", "--groups", ",".join(groups), name])
+        if result.returncode != 0:
+            log(f"useradd failed: {result.stderr.strip()[:300]}")
+            raise Refused(f"Could not create the user {name}.")
+        created = True
+        log(f"created login user {name}")
+
+    result = command(["chpasswd"], input=f"{name}:{password}\n")
+    if result.returncode != 0:
+        log(f"chpasswd failed for {name}")
+        raise Refused(f"Could not set the password of {name}.")
+    log(f"password set for {name}")
+    return {"created": created, "user": name}
+
+
+def _group_exists(name):
+    try:
+        grp.getgrnam(name)
+        return True
+    except KeyError:
+        return False
+
+
+def do_add_key(request):
+    entry = login_user(request.get("user"))
+    key_type, blob, comment = parse_key(request.get("key"))
+    keys = run_as(entry, {"op": "add", "type": key_type, "blob": blob, "comment": comment})
+    log(f"added a {key_type} key for {entry.pw_name} ({fingerprint(blob)})")
+    return {"user": entry.pw_name, "keys": keys}
+
+
+def do_remove_key(request):
+    entry = login_user(request.get("user"))
+    wanted = request.get("fingerprint")
+    if not isinstance(wanted, str) or not FINGERPRINT.match(wanted):
+        raise Refused("That is not a key fingerprint.")
+    keys = run_as(entry, {"op": "remove", "fingerprint": wanted})
+    log(f"removed key {wanted} of {entry.pw_name}")
+    return {"user": entry.pw_name, "keys": keys}
+
+
+ACTIONS = {
+    "status": do_status,
+    "ssh": do_ssh,
+    "set-password": do_set_password,
+    "add-key": do_add_key,
+    "remove-key": do_remove_key,
+}
+
+
+def answer(payload):
+    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.flush()
+
+
+def main():
+    if sys.argv[1:] == ["--keys-as-user"]:
+        try:
+            answer({"ok": True, "keys": keys_as_user()})
+        except Refused as refusal:
+            answer({"ok": False, "error": str(refusal)})
+        except OSError as error:
+            answer({"ok": False, "error": f"Could not change the keys: {error.strerror}."})
+        return 0
+
+    if os.geteuid() != 0:
+        answer({"ok": False, "error": "The system helper must run as root."})
+        return 1
+    raw = sys.stdin.buffer.read(MAX_REQUEST + 1)
+    try:
+        if len(raw) > MAX_REQUEST:
+            raise Refused("The request is too large.")
+        try:
+            request = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise Refused("The request is not valid JSON.") from None
+        if not isinstance(request, dict) or request.get("action") not in ACTIONS:
+            raise Refused("Unknown request.")
+        result = ACTIONS[request["action"]](request)
+        answer({"ok": True, **result})
+    except Refused as refusal:
+        answer({"ok": False, "error": str(refusal)})
+    except Exception as error:  # never leave the web UI without an answer
+        log(f"failed: {type(error).__name__}: {error}")
+        answer({"ok": False, "error": "The system helper ran into an error. See its log on the device."})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

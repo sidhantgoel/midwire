@@ -30,10 +30,13 @@ override_dh_auto_clean:
 	rm -rf build
 
 execute_after_dh_install:
-	chmod 755 debian/midwire-base/usr/lib/midwire/update
+	chmod 755 debian/midwire-base/usr/lib/midwire/update debian/midwire-base/usr/lib/midwire/system
 
-# Only the timer is enabled and started. The two services are started on
-# demand, and must never be stopped or restarted by this package's own
-# scripts: the install service is what is running them.
+# Only the timer and the helper's socket are enabled and started. The two
+# update services are started on demand, and must never be stopped or
+# restarted by this package's own scripts: the install service is what is
+# running them. The socket is not restarted on upgrade either, so a request
+# in flight is not cut off.
 override_dh_installsystemd:
 	dh_installsystemd midwire-update-check.timer
+	dh_installsystemd --no-restart-on-upgrade midwire-system.socket

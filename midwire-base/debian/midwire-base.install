@@ -1,4 +1,5 @@
 update usr/lib/midwire
+system usr/lib/midwire
 midwire.sources etc/apt/sources.list.d
 build/midwire-archive-keyring.gpg usr/share/keyrings
 84-midwire-usb-net.rules usr/lib/udev/rules.d
@@ -6,3 +7,5 @@ build/midwire-archive-keyring.gpg usr/share/keyrings
 units/midwire-update-check.service usr/lib/systemd/system
 units/midwire-update-install.service usr/lib/systemd/system
 units/midwire-update-check.timer usr/lib/systemd/system
+units/midwire-system.socket usr/lib/systemd/system
+units/midwire-system@.service usr/lib/systemd/system
