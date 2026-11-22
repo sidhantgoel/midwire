@@ -1,0 +1,13 @@
+# A USB device waiting to be proxied may also present a network adapter:
+# phones, drones and modems do (RNDIS, ECM, NCM). Until the proxy takes the
+# device over, the Pi is its USB host and would bring that interface up.
+# The device under test would then share a network with the Pi and its web
+# UI, and its DHCP server could change the Pi's routes.
+#
+# So mark every network interface that sits on a USB device as unmanaged:
+# NetworkManager leaves it down, with no address. The Ethernet and Wi-Fi
+# built into the Pi 4 and Pi 5 are not USB devices and are not affected.
+#
+# To use a USB Ethernet or Wi-Fi adapter with the Pi itself, delete this
+# file and reboot.
+ACTION!="remove", SUBSYSTEM=="net", SUBSYSTEMS=="usb", ENV{NM_UNMANAGED}="1"

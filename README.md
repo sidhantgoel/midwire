@@ -138,6 +138,14 @@ Build-time defaults for the hotspot (a fixed default password, a default
 country, the profile priority) are in
 `stage-midwire/03-network/files/firstboot.conf`.
 
+Network interfaces on USB devices are left alone. Phones, drones and modems
+often present a network adapter next to their other interfaces, and the Pi
+would otherwise bring it up while the device waits to be proxied, putting
+the device under test on a network with the Pi. A udev rule
+(`/etc/udev/rules.d/84-midwire-usb-net.rules`) marks such interfaces as
+unmanaged, so NetworkManager keeps them down. Delete that file if you want
+to use a USB Ethernet or Wi-Fi adapter with the Pi itself.
+
 ## Releases
 
 Pushing a tag `v<version>` runs `.github/workflows/build.yml`, which builds
