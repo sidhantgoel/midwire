@@ -23,7 +23,7 @@ apt-get install -y -qq --no-install-recommends build-essential debhelper gnupg >
 # missing exec bits from a Windows checkout: work on a copy.
 cp -r "$HERE" "$WORK/midwire-base"
 cd "$WORK/midwire-base"
-chmod +x debian/rules update system net-gadget
+chmod +x debian/rules update system net-gadget wifi-fallback
 
 if [ -n "${MIDWIRE_ARCHIVE_KEY:-}" ]; then
 	echo "midwire-base: using the key in $MIDWIRE_ARCHIVE_KEY instead of keys/"

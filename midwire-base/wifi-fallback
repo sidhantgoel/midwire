@@ -1,0 +1,261 @@
+#!/bin/bash
+# Decides whether the Pi's Wi-Fi joins a saved network or hosts the hotspot.
+#
+#   wifi-fallback boot    once at power-on
+#   wifi-fallback check   every couple of minutes after that
+#
+# Why this exists: NetworkManager cannot be left to choose by itself. At
+# power-on it starts the first Wi-Fi profile that is ready. A saved network
+# is not ready until a scan has found it, and a hotspot is always ready, so
+# the hotspot won every time, and once it was up NetworkManager never moved
+# to the saved network. So the hotspot profile is told not to start on its
+# own, and this script starts it only when it is the right thing to do:
+#
+#   * No saved network at all: host the hotspot.
+#   * A saved network: give NetworkManager a while to join it. Host the
+#     hotspot only if it has not.
+#   * Later, Wi-Fi has dropped and cannot be rejoined: host the hotspot, so
+#     the Pi stays reachable.
+#   * Later, hosting the hotspot as a fallback: now and then, look whether a
+#     saved network is back, and join it.
+#
+# That last look has a cost. NetworkManager does not scan while it hosts a
+# hotspot, so the hotspot has to go down for the seconds a scan takes. Two
+# rules keep that from hurting anyone:
+#   * It never happens while a device is connected to the hotspot.
+#   * It happens at most once every PROBE_SECONDS.
+# And a saved network that is in range but refuses us (a changed password)
+# is not tried again for RETRY_SECONDS.
+#
+# The hotspot counts as a fallback only when this script started it. One
+# that the user asked for on the web page's Network tab is left alone.
+#
+# "Saved network" means any Wi-Fi profile that joins a network and is set to
+# connect automatically: one made on the Network tab (midwire-wifi) or one
+# from Raspberry Pi Imager.
+set -uo pipefail
+
+IFACE=${MIDWIRE_WIFI_INTERFACE:-wlan0}
+HOTSPOT=midwire-hotspot
+BOOT_WAIT_SECONDS=${MIDWIRE_WIFI_BOOT_WAIT:-45}
+PROBE_SECONDS=${MIDWIRE_WIFI_PROBE:-300}
+RETRY_SECONDS=${MIDWIRE_WIFI_RETRY:-1800}
+JOIN_WAIT_SECONDS=45
+# For tests only.
+SYS=${MIDWIRE_WIFI_SYS:-/sys}
+RUN=${MIDWIRE_WIFI_RUN:-/run/midwire}
+
+# Present while the hotspot is up as a fallback. Holds the time of the last
+# look for a saved network.
+HOSTING=$RUN/wifi-fallback.hosting
+# Holds the time a saved network last refused us.
+FAILED=$RUN/wifi-fallback.failed
+LOCK=$RUN/wifi-fallback.lock
+
+log() { echo "midwire-wifi-fallback: $*"; }
+
+# One value of one profile or device, without nmcli's escaping.
+value() { nmcli -g "$1" "${@:2}" 2>/dev/null | head -n 1 | sed 's/\\\(.\)/\1/g'; }
+
+# connected, disconnected, "connecting (...)", unavailable, unmanaged, ...
+state() { nmcli -t -f DEVICE,STATE device status 2>/dev/null | awk -F: -v d="$IFACE" '$1 == d { print $2 }'; }
+
+# The profile active on the Wi-Fi interface, or nothing.
+active() {
+	local name
+	name=$(value GENERAL.CONNECTION device show "$IFACE")
+	[ "$name" = "--" ] && name=
+	printf '%s\n' "$name"
+}
+
+hotspot_exists() { nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "$HOTSPOT"; }
+
+# UUIDs of the saved networks. UUIDs, because names may contain anything.
+saved_networks() {
+	local uuid type
+	nmcli -t -f UUID,TYPE connection show 2>/dev/null | while IFS=: read -r uuid type; do
+		[ "$type" = 802-11-wireless ] || continue
+		[ "$(value 802-11-wireless.mode connection show "$uuid")" = ap ] && continue
+		[ "$(value connection.autoconnect connection show "$uuid")" = no ] && continue
+		echo "$uuid"
+	done
+}
+
+# Network names in range right now, one per line. Only meaningful while the
+# hotspot is down. An empty answer usually means the scan had not finished,
+# so that is asked once more.
+in_range() {
+	local found
+	for _ in 1 2; do
+		found=$(nmcli -t -f SSID device wifi list ifname "$IFACE" --rescan yes 2>/dev/null | sed 's/\\\(.\)/\1/g' | grep -v '^$')
+		[ -n "$found" ] && break
+		sleep 3
+	done
+	printf '%s\n' "$found"
+}
+
+# Devices connected to the hotspot. 0 when that cannot be told.
+stations() {
+	command -v iw >/dev/null 2>&1 || { echo 0; return; }
+	iw dev "$IFACE" station dump 2>/dev/null | grep -c '^Station' || true
+}
+
+# Seconds since the time written in a file. A missing or unreadable file
+# counts as "long ago".
+age() {
+	local since
+	since=$(cat "$1" 2>/dev/null) || since=0
+	[[ $since =~ ^[0-9]+$ ]] || since=0
+	echo $(($(date +%s) - since))
+}
+
+stamp() { mkdir -p "$RUN" && date +%s > "$1"; }
+
+start_hotspot() {
+	if ! hotspot_exists; then
+		log "there is no $HOTSPOT profile to fall back to"
+		return 1
+	fi
+	if nmcli --wait 30 connection up "$HOTSPOT" >/dev/null 2>&1; then
+		stamp "$HOSTING"
+		[ -z "${1:-}" ] || log "hosting the hotspot: $1"
+	else
+		log "could not start the hotspot"
+		return 1
+	fi
+}
+
+# Joins the first saved network that is in range. The hotspot must be down.
+# 0: joined. 1: none is in range. 2: one was in range and joining it failed.
+join_saved() {
+	local visible uuid ssid
+	visible=$(in_range)
+	for uuid in $(saved_networks); do
+		ssid=$(value 802-11-wireless.ssid connection show "$uuid")
+		[ -n "$ssid" ] || continue
+		# A hidden network never shows up in a scan; the only way to find
+		# out is to try.
+		if [ "$(value 802-11-wireless.hidden connection show "$uuid")" != yes ]; then
+			printf '%s\n' "$visible" | grep -qxF -- "$ssid" || continue
+		fi
+		log "joining \"$ssid\""
+		if nmcli --wait "$JOIN_WAIT_SECONDS" connection up "$uuid" >/dev/null 2>&1; then
+			rm -f "$FAILED" "$HOSTING"
+			log "joined \"$ssid\""
+			return 0
+		fi
+		log "could not join \"$ssid\"; not trying again for $((RETRY_SECONDS / 60)) minutes"
+		stamp "$FAILED"
+		return 2
+	done
+	return 1
+}
+
+# Hosting as a fallback: is a saved network back?
+look_for_saved() {
+	[ -n "$(saved_networks)" ] || return 0
+	[ "$(age "$FAILED")" -ge "$RETRY_SECONDS" ] || return 0
+	[ "$(age "$HOSTING")" -ge "$PROBE_SECONDS" ] || return 0
+	[ "$(stations)" -eq 0 ] || return 0
+
+	stamp "$HOSTING"
+	# "connection down", not "device disconnect": the latter also stops
+	# NetworkManager from ever joining a saved network on its own again.
+	nmcli connection down "$HOTSPOT" >/dev/null 2>&1
+	join_saved
+	case $? in
+	0) return 0 ;;
+	2) start_hotspot "the saved network refused the connection" ;;
+	*) start_hotspot ;; # still out of range: back as it was, quietly
+	esac
+}
+
+check() {
+	local status
+	status=$(state)
+	case $status in
+	"" | unavailable | unmanaged)
+		# No Wi-Fi adapter, or the radio is switched off.
+		return 0
+		;;
+	connecting* | deactivating*)
+		# Something is under way, e.g. a join started from the web page.
+		return 0
+		;;
+	esac
+
+	if [ "$(active)" = "$HOTSPOT" ]; then
+		# Leave a hotspot the user chose alone.
+		[ -e "$HOSTING" ] || return 0
+		look_for_saved
+		return
+	fi
+
+	if [ "$status" = connected ]; then
+		rm -f "$HOSTING" # on a saved network
+		return 0
+	fi
+
+	# Not connected to anything.
+	if [ -n "$(saved_networks)" ] && [ "$(age "$FAILED")" -ge "$RETRY_SECONDS" ]; then
+		join_saved && return 0
+	fi
+	start_hotspot "no saved Wi-Fi network could be joined"
+}
+
+boot() {
+	[ -e "$SYS/class/net/$IFACE" ] || { log "no $IFACE"; return 0; }
+
+	# From now on the hotspot starts only when this script starts it. This
+	# is what lets NetworkManager join a saved network at power-on.
+	if hotspot_exists && [ "$(value connection.autoconnect connection show "$HOTSPOT")" != no ]; then
+		nmcli connection modify "$HOTSPOT" connection.autoconnect no \
+			&& log "the hotspot no longer starts by itself"
+	fi
+
+	if [ "$(active)" = "$HOTSPOT" ]; then
+		# The first start after the update that brought this script:
+		# NetworkManager had started the hotspot already. Take it for a
+		# fallback, due for a look straight away.
+		[ -e "$HOSTING" ] || { mkdir -p "$RUN" && echo 0 > "$HOSTING"; }
+		check
+		return
+	fi
+
+	if [ -z "$(saved_networks)" ]; then
+		[ "$(state)" = connected ] || start_hotspot "there is no saved Wi-Fi network"
+		return
+	fi
+
+	# Give NetworkManager time to scan and join the saved network.
+	local waited=0
+	while [ "$waited" -lt "$BOOT_WAIT_SECONDS" ]; do
+		if [ "$(state)" = connected ]; then
+			log "on the saved network \"$(active)\""
+			return 0
+		fi
+		sleep 3
+		waited=$((waited + 3))
+	done
+	check
+}
+
+case ${1:-} in
+boot | check) ;;
+*)
+	echo "usage: wifi-fallback boot | check" >&2
+	exit 2
+	;;
+esac
+
+command -v nmcli >/dev/null 2>&1 || { log "NetworkManager (nmcli) is not installed"; exit 0; }
+
+# One at a time. A check that finds another run busy has nothing to add.
+mkdir -p "$RUN"
+exec 9> "$LOCK"
+if [ "$1" = check ]; then
+	flock -n 9 || exit 0
+else
+	flock 9
+fi
+"$1"

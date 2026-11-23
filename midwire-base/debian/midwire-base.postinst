@@ -25,4 +25,9 @@ if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
 		systemctl reset-failed midwire-net-gadget.service 2>/dev/null || true
 		systemctl restart --no-block midwire-net-gadget.service || true
 	fi
+
+	# Wi-Fi: stop the hotspot starting by itself (see wifi-fallback), and
+	# put the Pi where it belongs now. Not waited for. A device somebody is
+	# using the hotspot of stays on the hotspot.
+	systemctl start --no-block midwire-wifi-fallback.service || true
 fi

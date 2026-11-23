@@ -91,8 +91,11 @@ nmcli radio wifi on || true
 if nmcli -t -f NAME connection show | grep -qx midwire-hotspot; then
 	log "midwire-hotspot already exists, leaving it alone"
 else
+	# autoconnect no: NetworkManager must not start the hotspot by itself,
+	# or it wins against every saved Wi-Fi network at power-on. It is started
+	# by /usr/lib/midwire/wifi-fallback (midwire-base), which runs after this.
 	nmcli connection add type wifi ifname wlan0 con-name midwire-hotspot ssid "$ssid" \
-		connection.autoconnect yes connection.autoconnect-priority "$HOTSPOT_PRIORITY" \
+		connection.autoconnect no connection.autoconnect-priority "$HOTSPOT_PRIORITY" \
 		wifi.mode ap wifi.band bg wifi.channel 6 \
 		wifi-sec.key-mgmt wpa-psk wifi-sec.proto rsn \
 		wifi-sec.pairwise ccmp wifi-sec.group ccmp wifi-sec.psk "$password" \

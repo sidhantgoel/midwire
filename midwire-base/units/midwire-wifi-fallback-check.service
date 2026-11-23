@@ -1,0 +1,9 @@
+[Unit]
+Description=Wi-Fi: keep the Pi on a saved network, or reachable through the hotspot
+Documentation=https://github.com/sidhantgoel/midwire
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/midwire/wifi-fallback check
+SyslogIdentifier=midwire-wifi-fallback

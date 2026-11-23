@@ -16,6 +16,7 @@ Depends:
  ca-certificates,
  dnsmasq-base,
  iproute2,
+ iw,
  kmod,
  midwire-web-ui (>= 0.2.0),
  polkitd,
@@ -36,6 +37,10 @@ Description: Midwire system configuration and updater
  While the proxy is idle it turns the USB-C port into a network adapter, so
  the computer on the other end of the cable can open the web UI. The port
  goes back to the proxy when the proxy starts.
+ .
+ It decides what the Pi's Wi-Fi does: join a saved network when one is in
+ range, host the Midwire hotspot when none is, and go back to the saved
+ network when it returns.
  .
  The updater upgrades only Midwire's packages (this one, midwire-web-ui,
  usb-proxy and raw-gadget-dkms). The operating system is left alone. It

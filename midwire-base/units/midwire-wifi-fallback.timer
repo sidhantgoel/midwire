@@ -1,0 +1,14 @@
+[Unit]
+Description=Regular look at the Pi's Wi-Fi
+Documentation=https://github.com/sidhantgoel/midwire
+
+[Timer]
+# The first look comes after midwire-wifi-fallback.service has had its turn
+# at power-on. Most looks find nothing to do and cost a few nmcli calls.
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=20s
+Unit=midwire-wifi-fallback-check.service
+
+[Install]
+WantedBy=timers.target

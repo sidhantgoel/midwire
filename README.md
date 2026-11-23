@@ -42,13 +42,14 @@ and log in with user name `admin`, password `admin`. The page offers to
 change that password after the first login; do so before leaving the Pi on
 a network you share with others. **https://midwire.local** works too: the
 Pi creates its own certificate on first start, so your browser shows a
-warning once that you have to accept. There are four ways to get there:
+warning once that you have to accept. There are five ways to get there:
 
 | How | What happens |
 |---|---|
 | Ethernet to your router or switch | The Pi gets an address from your network, like any other device. |
 | Ethernet straight to your computer | After about 30 seconds without an answer from a DHCP server, the Pi takes `10.42.1.1` and gives your computer an address. |
 | Wi-Fi hotspot | The Pi creates a network called `Midwire-XXXX` (the last four characters differ per device) and is at `10.42.0.1`. |
+| Your own Wi-Fi | Once you have joined a network on the page's Network tab (or set one in Raspberry Pi Imager), the Pi joins it at every start instead of hosting the hotspot. |
 | The USB-C cable itself | While the proxy is stopped, the USB-C port is a network adapter: the computer it is plugged into gets an address and reaches the Pi at `10.42.2.1`. The link drops while the proxy runs. |
 
 The hotspot's password is `midwire-setup` on every new device. The setup
@@ -67,6 +68,16 @@ on 2.4 GHz channel 6, which is allowed everywhere.
 
 If you move an Ethernet cable from a computer to a router or back, unplug it
 for ten seconds first so the Pi notices and tries DHCP again.
+
+The hotspot is the fallback for your own Wi-Fi. With a network saved, the
+Pi gives it about 45 seconds at power-on and hosts the hotspot only if it
+could not join. If the network disappears later, the hotspot comes up
+within a few minutes, and when the network is back the Pi rejoins it. It
+looks for the network at most every five minutes, and never while a
+device is connected to the hotspot, because looking takes the hotspot
+down for a few seconds. A network that refuses the Pi, for example after
+its password was changed, is tried again every half hour; correct the
+password on the Network tab.
 
 ### Wire it up
 
@@ -136,11 +147,27 @@ relies on these profile names:
 |---|---|---|
 | `midwire-eth-dhcp` | image | Ethernet as a DHCP client. Tried first. |
 | `midwire-eth-direct` | image | Ethernet as a DHCP server at `10.42.1.1`. Used when DHCP fails. |
-| `midwire-hotspot` | first boot | Wi-Fi access point at `10.42.0.1`. |
+| `midwire-hotspot` | first boot | Wi-Fi access point at `10.42.0.1`. Does not connect automatically. |
 | `midwire-wifi` | web UI | Joining an existing Wi-Fi network. Preferred over the hotspot. |
 
-Build-time defaults for the hotspot (a fixed default password, a default
-country, the profile priority) are in
+NetworkManager is not left to choose between the last two. At power-on it
+starts whichever profile is ready first, and a hotspot is always ready
+while a network to join has to be found by a scan, so the hotspot would
+win every time and stay. `midwire-base` decides instead:
+
+| Piece | What it does |
+|---|---|
+| `/usr/lib/midwire/wifi-fallback boot` | Run by `midwire-wifi-fallback.service` at power-on. Waits for NetworkManager to join a saved network and starts the hotspot only if it has not. |
+| `/usr/lib/midwire/wifi-fallback check` | Run every two minutes by `midwire-wifi-fallback.timer`. Starts the hotspot when Wi-Fi has dropped, and moves from a fallback hotspot back to a saved network. |
+
+A saved network is any Wi-Fi profile that joins a network and connects
+automatically, so one from Raspberry Pi Imager counts too. A hotspot the
+user switched on from the Network tab is not a fallback and is left alone
+until the next restart. `journalctl -t midwire-wifi-fallback` shows what
+was decided and why.
+
+Build-time defaults for the hotspot (a fixed default password and a default
+country) are in
 `stage-midwire/03-network/files/firstboot.conf`.
 
 Network interfaces on USB devices are left alone. Phones, drones and modems

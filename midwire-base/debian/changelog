@@ -1,3 +1,19 @@
+midwire-base (0.4.2) unstable; urgency=medium
+
+  * Fix the Pi hosting its hotspot after every restart although a Wi-Fi
+    network was saved. NetworkManager started the hotspot before its first
+    scan had found the saved network, and never left it again. The hotspot
+    profile no longer starts by itself. A new service, wifi-fallback, gives
+    the saved network time to connect at power-on and starts the hotspot
+    only when it has not.
+  * The hotspot is now a real fallback: if the saved network drops, the
+    hotspot comes up within a few minutes, and when the network is back the
+    Pi rejoins it. It looks for the network only while no device is
+    connected to the hotspot, at most every five minutes. A network that
+    refuses the connection (a changed password) is retried every half hour.
+
+ -- Sidhant Goel <sidhant@hexcod.in>  Mon, 23 Nov 2026 18:00:00 +0000
+
 midwire-base (0.4.1) unstable; urgency=medium
 
   * Fix the network link over the USB-C port, which 0.4.0 left "not

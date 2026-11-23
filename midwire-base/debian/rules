@@ -31,7 +31,7 @@ override_dh_auto_clean:
 
 execute_after_dh_install:
 	chmod 755 debian/midwire-base/usr/lib/midwire/update debian/midwire-base/usr/lib/midwire/system \
-		debian/midwire-base/usr/lib/midwire/net-gadget
+		debian/midwire-base/usr/lib/midwire/net-gadget debian/midwire-base/usr/lib/midwire/wifi-fallback
 
 # Only the timer and the helper's socket are enabled and started. The two
 # update services are started on demand, and must never be stopped or
@@ -45,3 +45,8 @@ override_dh_installsystemd:
 	# it takes the USB-C port away from a running proxy. The postinst starts
 	# it only when the proxy is idle.
 	dh_installsystemd --no-start midwire-net-gadget.service
+	# The regular look at Wi-Fi is enabled and started like any timer. The
+	# power-on service is enabled only: the postinst starts it without waiting
+	# for it, because it can take a minute.
+	dh_installsystemd midwire-wifi-fallback.timer
+	dh_installsystemd --no-start midwire-wifi-fallback.service

@@ -1,0 +1,16 @@
+[Unit]
+Description=Wi-Fi at power-on: join a saved network, or host the hotspot
+Documentation=https://github.com/sidhantgoel/midwire
+# After the first-boot service, which creates the hotspot profile.
+After=NetworkManager.service midwire-firstboot.service
+Wants=NetworkManager.service
+
+[Service]
+# Not oneshot: this waits up to a minute for the saved network, and nothing
+# else at power-on should wait with it.
+Type=exec
+ExecStart=/usr/lib/midwire/wifi-fallback boot
+SyslogIdentifier=midwire-wifi-fallback
+
+[Install]
+WantedBy=multi-user.target
