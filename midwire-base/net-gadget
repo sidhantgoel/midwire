@@ -18,11 +18,26 @@
 # server. So this is a management link only. The computer keeps its own
 # internet connection, and cannot reach other networks through the Pi.
 # NetworkManager is not involved; it leaves gadget interfaces alone.
-set -euo pipefail
+#
+# Two rules this script keeps, because the proxy depends on them:
+#   * "up" never leaves the port taken when it fails. If the link cannot be
+#     brought up completely, the port is released again.
+#   * "down" releases the port whatever state anything else is in.
+#
+# -E: the ERR trap that releases the port also fires inside functions.
+set -Eeuo pipefail
 
-GADGET=/sys/kernel/config/usb_gadget/midwire-net
+# For tests only: where configfs and sysfs are, and where the state file goes.
+CONFIGFS=${MIDWIRE_NET_GADGET_CONFIGFS:-/sys/kernel/config}
+SYS=${MIDWIRE_NET_GADGET_SYS:-/sys}
+# Tells midwire-net-gadget-dhcp.service which interface to serve.
+STATE=${MIDWIRE_NET_GADGET_STATE:-/run/midwire/net-gadget.env}
+
+GADGET=$CONFIGFS/usb_gadget/midwire-net
 FUNCTION=$GADGET/functions/ncm.usb0
-INTERFACE=midwire0
+# The kernel only accepts a name with exactly one %d in it, and fills in the
+# number: this becomes midwire0.
+INTERFACE_PATTERN=midwire%d
 ADDRESS=10.42.2.1/24
 
 log() { echo "midwire-net-gadget: $*"; }
@@ -30,7 +45,7 @@ log() { echo "midwire-net-gadget: $*"; }
 controller() {
 	# The only device-mode controller: dwc2 on the USB-C port.
 	local entry
-	for entry in /sys/class/udc/*; do
+	for entry in "$SYS"/class/udc/*; do
 		[ -e "$entry" ] || continue
 		basename "$entry"
 		return 0
@@ -43,14 +58,28 @@ controller() {
 # two ends of the link.
 mac() {
 	local serial digest
-	serial=$(tr -d '\0' < /proc/device-tree/serial-number 2>/dev/null || cat /etc/machine-id)
+	serial=$(tr -d '\0' 2>/dev/null < /proc/device-tree/serial-number || cat /etc/machine-id 2>/dev/null || echo midwire)
 	digest=$(printf '%s-%s' "$serial" "$1" | sha256sum | cut -c1-10)
 	printf '02:%s:%s:%s:%s:%s\n' "${digest:0:2}" "${digest:2:2}" "${digest:4:2}" "${digest:6:2}" "${digest:8:2}"
 }
 
+# The Pi's end of the link, found by its MAC address rather than by name,
+# so this works whatever the kernel decided to call it.
+interface() {
+	local wanted entry
+	wanted=$(mac pi)
+	for entry in "$SYS"/class/net/*; do
+		if [ "$(cat "$entry/address" 2>/dev/null)" = "$wanted" ]; then
+			basename "$entry"
+			return 0
+		fi
+	done
+	return 1
+}
+
 create() {
 	local serial
-	serial=$(tr -d '\0' < /proc/device-tree/serial-number 2>/dev/null || echo midwire)
+	serial=$(tr -d '\0' 2>/dev/null < /proc/device-tree/serial-number || echo midwire)
 
 	mkdir -p "$GADGET"
 	# The Linux Foundation's ids for a gadget built this way.
@@ -72,8 +101,12 @@ create() {
 	mkdir -p "$FUNCTION"
 	mac pi > "$FUNCTION/dev_addr"
 	mac host > "$FUNCTION/host_addr"
-	echo "$INTERFACE" > "$FUNCTION/ifname" 2>/dev/null \
-		|| log "this kernel names the interface itself; expected $INTERFACE"
+	# Must be done here: the kernel refuses to name the interface once the
+	# function is attached to a configuration, a few lines down. If it is
+	# refused the interface is called usb0, and everything still works,
+	# because the interface is looked up by its address.
+	echo "$INTERFACE_PATTERN" > "$FUNCTION/ifname" 2>/dev/null \
+		|| log "this kernel does not let the interface be named"
 
 	mkdir -p "$GADGET/configs/c.1/strings/0x409"
 	echo "Network" > "$GADGET/configs/c.1/strings/0x409/configuration"
@@ -94,14 +127,22 @@ create() {
 
 bound() { [ -n "$(cat "$GADGET/UDC" 2>/dev/null)" ]; }
 
+release() {
+	if [ -d "$GADGET" ] && bound; then
+		echo "" > "$GADGET/UDC"
+		return 0
+	fi
+	return 1
+}
+
 up() {
-	local udc
+	local udc name
 	if ! udc=$(controller); then
 		log "no USB device controller; is dtoverlay=dwc2,dr_mode=peripheral set?"
 		return 0
 	fi
 	modprobe libcomposite
-	[ -d /sys/kernel/config/usb_gadget ] || mount -t configfs none /sys/kernel/config
+	[ -d "$CONFIGFS/usb_gadget" ] || mount -t configfs none "$CONFIGFS"
 	[ -d "$GADGET/configs/c.1" ] || create
 
 	if bound; then
@@ -112,24 +153,34 @@ up() {
 		log "network gadget up on $udc"
 	fi
 
+	# From here on the port is taken. Whatever goes wrong, give it back:
+	# the proxy must never find it held by a link that is not working.
+	trap 'log "could not finish; releasing the port"; release || true' ERR
+
+	name=
 	for _ in 1 2 3 4 5 6 7 8 9 10; do
-		[ -e "/sys/class/net/$INTERFACE" ] && break
+		name=$(interface) && break
 		sleep 0.5
 	done
-	if [ ! -e "/sys/class/net/$INTERFACE" ]; then
-		log "the interface $INTERFACE did not appear"
-		return 1
+	if [ -z "$name" ]; then
+		log "the link's network interface did not appear"
+		false
 	fi
-	ip link set dev "$INTERFACE" up
-	ip address replace "$ADDRESS" dev "$INTERFACE"
-	log "$INTERFACE is ${ADDRESS%/*}"
+	# Switching the interface on is what tells the computer on the other end
+	# that the cable is "connected".
+	ip link set dev "$name" up
+	ip address replace "$ADDRESS" dev "$name"
+	mkdir -p "$(dirname "$STATE")"
+	echo "INTERFACE=$name" > "$STATE"
+	trap - ERR
+	log "$name is ${ADDRESS%/*}"
 }
 
 down() {
-	if [ -d "$GADGET" ] && bound; then
-		echo "" > "$GADGET/UDC"
+	if release; then
 		log "network gadget down; the port is free"
 	fi
+	rm -f "$STATE"
 }
 
 case ${1:-} in

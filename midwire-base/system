@@ -286,6 +286,9 @@ def do_net_gadget(request):
             result = command(["systemctl", "start", NET_GADGET_UNIT])
     else:
         result = command(["systemctl", "disable", "--now", NET_GADGET_UNIT])
+        # Stopping a unit that had failed does not run its stop command, so
+        # release the port directly too.
+        command(["/usr/lib/midwire/net-gadget", "down"])
     if result.returncode != 0:
         log(f"systemctl failed: {result.stderr.strip()[:300]}")
         raise Refused(f"Could not turn the USB-C network link {'on' if enabled else 'off'}. "

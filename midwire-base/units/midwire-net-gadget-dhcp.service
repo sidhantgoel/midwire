@@ -6,14 +6,18 @@ PartOf=midwire-net-gadget.service
 After=midwire-net-gadget.service
 
 [Service]
-# A DHCP server for midwire0 and nothing else:
+# Written by net-gadget when the link is up. midwire0 unless the kernel
+# named the interface differently.
+Environment=INTERFACE=midwire0
+EnvironmentFile=-/run/midwire/net-gadget.env
+# A DHCP server for the link's interface and nothing else:
 #   --port=0                          no DNS server
 #   --dhcp-option=option:router       send no gateway
 #   --dhcp-option=option:dns-server   send no DNS server
 # So the computer gets an address to reach the Pi with and keeps its own
 # internet connection. Nothing is routed through the Pi.
 ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= \
-    --port=0 --interface=midwire0 --bind-dynamic --except-interface=lo \
+    --port=0 --interface=${INTERFACE} --bind-dynamic --except-interface=lo \
     --dhcp-range=10.42.2.10,10.42.2.50,255.255.255.0,12h \
     --dhcp-option=option:router --dhcp-option=option:dns-server \
     --dhcp-authoritative --leasefile-ro --log-facility=-

@@ -18,9 +18,11 @@ if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
 	systemctl start --no-block midwire-update-check.service || true
 
 	# The network link over the USB-C port: bring it up now if it is switched
-	# on, unless the proxy is using the port.
+	# on, unless the proxy is using the port. Restart, not start: an earlier
+	# version may have left it half-up, and this is how a fix reaches it.
 	if systemctl is-enabled --quiet midwire-net-gadget.service 2>/dev/null \
 		&& ! systemctl is-active --quiet usb-proxy.service; then
-		systemctl start --no-block midwire-net-gadget.service || true
+		systemctl reset-failed midwire-net-gadget.service 2>/dev/null || true
+		systemctl restart --no-block midwire-net-gadget.service || true
 	fi
 fi

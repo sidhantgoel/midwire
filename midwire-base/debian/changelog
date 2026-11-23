@@ -1,3 +1,17 @@
+midwire-base (0.4.1) unstable; urgency=medium
+
+  * Fix the network link over the USB-C port, which 0.4.0 left "not
+    connected" on the computer: the Pi's end was never switched on, because
+    the kernel refused the interface name the script asked for. The script
+    now asks for a name the kernel accepts and finds the interface by its
+    address, not its name.
+  * Fix the proxy not being able to start while that link was in this
+    state. Bringing the link up now releases the port again if anything
+    goes wrong, the proxy's unit releases it directly before starting, and
+    switching the link off does too.
+
+ -- Sidhant Goel <sidhant@hexcod.in>  Mon, 23 Nov 2026 12:00:00 +0000
+
 midwire-base (0.4.0) unstable; urgency=medium
 
   * While the proxy is idle, the USB-C port is a USB network adapter (NCM):
