@@ -1,0 +1,142 @@
+#!/bin/bash
+# Network over the USB-C port while the proxy is idle.
+#
+#   net-gadget up     make the USB-C port a USB network adapter (NCM)
+#   net-gadget down   release the port, so usb-proxy can take it
+#
+# The Pi has one USB port that can act as a device, and it can carry only
+# one gadget at a time. While usb-proxy is not running, this script gives the
+# port to a standard Linux network gadget: the computer on the other end of
+# the cable sees a network adapter, gets an address from the Pi, and can open
+# the web UI at http://midwire.local (the Pi is 10.42.2.1). When usb-proxy
+# starts, systemd runs "down" first (see the unit files), and "up" again when
+# the proxy has stopped.
+#
+# The Pi's side of the link is the network interface midwire0, with the
+# fixed address 10.42.2.1. midwire-net-gadget-dhcp.service gives the computer
+# an address in the same range and nothing else: no gateway and no DNS
+# server. So this is a management link only. The computer keeps its own
+# internet connection, and cannot reach other networks through the Pi.
+# NetworkManager is not involved; it leaves gadget interfaces alone.
+set -euo pipefail
+
+GADGET=/sys/kernel/config/usb_gadget/midwire-net
+FUNCTION=$GADGET/functions/ncm.usb0
+INTERFACE=midwire0
+ADDRESS=10.42.2.1/24
+
+log() { echo "midwire-net-gadget: $*"; }
+
+controller() {
+	# The only device-mode controller: dwc2 on the USB-C port.
+	local entry
+	for entry in /sys/class/udc/*; do
+		[ -e "$entry" ] || continue
+		basename "$entry"
+		return 0
+	done
+	return 1
+}
+
+# A stable, locally administered MAC address from the Pi's serial number,
+# so the computer sees the same adapter every time. $1 picks which of the
+# two ends of the link.
+mac() {
+	local serial digest
+	serial=$(tr -d '\0' < /proc/device-tree/serial-number 2>/dev/null || cat /etc/machine-id)
+	digest=$(printf '%s-%s' "$serial" "$1" | sha256sum | cut -c1-10)
+	printf '02:%s:%s:%s:%s:%s\n' "${digest:0:2}" "${digest:2:2}" "${digest:4:2}" "${digest:6:2}" "${digest:8:2}"
+}
+
+create() {
+	local serial
+	serial=$(tr -d '\0' < /proc/device-tree/serial-number 2>/dev/null || echo midwire)
+
+	mkdir -p "$GADGET"
+	# The Linux Foundation's ids for a gadget built this way.
+	echo 0x1d6b > "$GADGET/idVendor"
+	echo 0x0104 > "$GADGET/idProduct"
+	echo 0x0100 > "$GADGET/bcdDevice"
+	echo 0x0200 > "$GADGET/bcdUSB"
+	# "Miscellaneous device, interface association": how a host is told to
+	# read the two NCM interfaces as one function.
+	echo 0xEF > "$GADGET/bDeviceClass"
+	echo 0x02 > "$GADGET/bDeviceSubClass"
+	echo 0x01 > "$GADGET/bDeviceProtocol"
+
+	mkdir -p "$GADGET/strings/0x409"
+	echo "Midwire" > "$GADGET/strings/0x409/manufacturer"
+	echo "Midwire management network" > "$GADGET/strings/0x409/product"
+	echo "$serial" > "$GADGET/strings/0x409/serialnumber"
+
+	mkdir -p "$FUNCTION"
+	mac pi > "$FUNCTION/dev_addr"
+	mac host > "$FUNCTION/host_addr"
+	echo "$INTERFACE" > "$FUNCTION/ifname" 2>/dev/null \
+		|| log "this kernel names the interface itself; expected $INTERFACE"
+
+	mkdir -p "$GADGET/configs/c.1/strings/0x409"
+	echo "Network" > "$GADGET/configs/c.1/strings/0x409/configuration"
+	echo 250 > "$GADGET/configs/c.1/MaxPower"
+	ln -sf "$FUNCTION" "$GADGET/configs/c.1/"
+
+	# Windows 10 loads its built-in NCM driver only when the device asks
+	# for it by name, through Microsoft's "OS descriptors". Windows 11,
+	# macOS and Linux go by the device class and do not need this.
+	if [ -d "$FUNCTION/os_desc/interface.ncm" ]; then
+		echo WINNCM > "$FUNCTION/os_desc/interface.ncm/compatible_id"
+		echo 1 > "$GADGET/os_desc/use"
+		echo 0xcd > "$GADGET/os_desc/b_vendor_code"
+		echo MSFT100 > "$GADGET/os_desc/qw_sign"
+		ln -sf "$GADGET/configs/c.1" "$GADGET/os_desc/"
+	fi
+}
+
+bound() { [ -n "$(cat "$GADGET/UDC" 2>/dev/null)" ]; }
+
+up() {
+	local udc
+	if ! udc=$(controller); then
+		log "no USB device controller; is dtoverlay=dwc2,dr_mode=peripheral set?"
+		return 0
+	fi
+	modprobe libcomposite
+	[ -d /sys/kernel/config/usb_gadget ] || mount -t configfs none /sys/kernel/config
+	[ -d "$GADGET/configs/c.1" ] || create
+
+	if bound; then
+		log "already up on $(cat "$GADGET/UDC")"
+	else
+		# Fails if something else holds the port, e.g. usb-proxy is running.
+		echo "$udc" > "$GADGET/UDC"
+		log "network gadget up on $udc"
+	fi
+
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		[ -e "/sys/class/net/$INTERFACE" ] && break
+		sleep 0.5
+	done
+	if [ ! -e "/sys/class/net/$INTERFACE" ]; then
+		log "the interface $INTERFACE did not appear"
+		return 1
+	fi
+	ip link set dev "$INTERFACE" up
+	ip address replace "$ADDRESS" dev "$INTERFACE"
+	log "$INTERFACE is ${ADDRESS%/*}"
+}
+
+down() {
+	if [ -d "$GADGET" ] && bound; then
+		echo "" > "$GADGET/UDC"
+		log "network gadget down; the port is free"
+	fi
+}
+
+case ${1:-} in
+up) up ;;
+down) down ;;
+*)
+	echo "usage: net-gadget up | down" >&2
+	exit 2
+	;;
+esac

@@ -1,0 +1,22 @@
+[Unit]
+Description=Network over the USB-C port while the proxy is idle
+Documentation=https://github.com/sidhantgoel/midwire
+After=NetworkManager.service sys-kernel-config.mount
+# The port carries one gadget at a time. Starting usb-proxy stops this unit
+# first (see usb-proxy.service.d/20-midwire-net-gadget.conf), and when the
+# proxy has stopped, that drop-in starts this unit again.
+Conflicts=usb-proxy.service
+# Addresses for the computer on the other end of the cable.
+Wants=midwire-net-gadget-dhcp.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/midwire/net-gadget up
+ExecStop=/usr/lib/midwire/net-gadget down
+# Releasing the port is one write. Never keep the proxy waiting for long.
+TimeoutStopSec=15
+SyslogIdentifier=midwire-net-gadget
+
+[Install]
+WantedBy=multi-user.target

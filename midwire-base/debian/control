@@ -14,6 +14,9 @@ Architecture: all
 Depends:
  apt,
  ca-certificates,
+ dnsmasq-base,
+ iproute2,
+ kmod,
  midwire-web-ui (>= 0.2.0),
  polkitd,
  python3,
@@ -29,6 +32,10 @@ Description: Midwire system configuration and updater
  It also holds the helper behind the web UI's SSH settings: turning SSH on
  or off, setting a login user's password and managing that user's SSH keys.
  Only the web UI's service user can reach it, over a local socket.
+ .
+ While the proxy is idle it turns the USB-C port into a network adapter, so
+ the computer on the other end of the cable can open the web UI. The port
+ goes back to the proxy when the proxy starts.
  .
  The updater upgrades only Midwire's packages (this one, midwire-web-ui,
  usb-proxy and raw-gadget-dkms). The operating system is left alone. It

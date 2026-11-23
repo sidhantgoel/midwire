@@ -1,0 +1,22 @@
+[Unit]
+Description=Addresses for the computer on the USB-C network link
+Documentation=https://github.com/sidhantgoel/midwire
+# Lives and dies with the network gadget.
+PartOf=midwire-net-gadget.service
+After=midwire-net-gadget.service
+
+[Service]
+# A DHCP server for midwire0 and nothing else:
+#   --port=0                          no DNS server
+#   --dhcp-option=option:router       send no gateway
+#   --dhcp-option=option:dns-server   send no DNS server
+# So the computer gets an address to reach the Pi with and keeps its own
+# internet connection. Nothing is routed through the Pi.
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --pid-file= \
+    --port=0 --interface=midwire0 --bind-dynamic --except-interface=lo \
+    --dhcp-range=10.42.2.10,10.42.2.50,255.255.255.0,12h \
+    --dhcp-option=option:router --dhcp-option=option:dns-server \
+    --dhcp-authoritative --leasefile-ro --log-facility=-
+Restart=on-failure
+RestartSec=2
+SyslogIdentifier=midwire-net-gadget-dhcp

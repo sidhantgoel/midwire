@@ -16,4 +16,11 @@ if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
 	# So the Updates page has something to show straight away. During an
 	# update the updater is already running and this exits at once.
 	systemctl start --no-block midwire-update-check.service || true
+
+	# The network link over the USB-C port: bring it up now if it is switched
+	# on, unless the proxy is using the port.
+	if systemctl is-enabled --quiet midwire-net-gadget.service 2>/dev/null \
+		&& ! systemctl is-active --quiet usb-proxy.service; then
+		systemctl start --no-block midwire-net-gadget.service || true
+	fi
 fi

@@ -7,6 +7,7 @@ JSON object comes in on stdin, one goes out on stdout:
 
     {"action": "status"}
     {"action": "ssh", "enabled": true}
+    {"action": "net-gadget", "enabled": true}
     {"action": "set-password", "user": "pi", "password": "..."}
     {"action": "add-key", "user": "pi", "key": "ssh-ed25519 AAAA... me@laptop"}
     {"action": "remove-key", "user": "pi", "fingerprint": "SHA256:..."}
@@ -62,6 +63,8 @@ NO_LOGIN_SHELLS = ("nologin", "false", "sync", "halt", "shutdown")
 NEW_USER_GROUPS = ("sudo", "adm", "dialout", "cdrom", "audio", "video", "plugdev", "users",
                    "input", "render", "netdev", "gpio", "i2c", "spi")
 MAX_KEYS = 50
+NET_GADGET_UNIT = "midwire-net-gadget.service"
+PROXY_UNIT = "usb-proxy.service"
 
 
 class Refused(Exception):
@@ -254,6 +257,43 @@ def ssh_state():
     return {"installed": installed, "enabled": enabled, "running": running}
 
 
+def unit_is(query, unit):
+    return command(["systemctl", query, unit]).stdout.strip()
+
+
+def net_gadget_state():
+    """The network link over the USB-C port. "active" is false while the
+    proxy has the port, even when the link is switched on."""
+    installed = os.path.exists("/usr/lib/midwire/net-gadget")
+    return {
+        "installed": installed,
+        "enabled": installed and unit_is("is-enabled", NET_GADGET_UNIT) == "enabled",
+        "active": installed and unit_is("is-active", NET_GADGET_UNIT) == "active",
+    }
+
+
+def do_net_gadget(request):
+    enabled = request.get("enabled")
+    if not isinstance(enabled, bool):
+        raise Refused("Say whether the USB-C network link should be on or off.")
+    if not os.path.exists("/usr/lib/midwire/net-gadget"):
+        raise Refused("This device cannot offer a network over the USB-C port.")
+    if enabled:
+        result = command(["systemctl", "enable", NET_GADGET_UNIT])
+        # Starting it takes the port, which would stop a running proxy. While
+        # the proxy runs, switching on only takes effect when it next stops.
+        if result.returncode == 0 and unit_is("is-active", PROXY_UNIT) not in ("active", "activating"):
+            result = command(["systemctl", "start", NET_GADGET_UNIT])
+    else:
+        result = command(["systemctl", "disable", "--now", NET_GADGET_UNIT])
+    if result.returncode != 0:
+        log(f"systemctl failed: {result.stderr.strip()[:300]}")
+        raise Refused(f"Could not turn the USB-C network link {'on' if enabled else 'off'}. "
+                      "See the midwire-system log.")
+    log(f"USB-C network link turned {'on' if enabled else 'off'}")
+    return {"net_gadget": net_gadget_state()}
+
+
 def do_status(_request):
     users = []
     for entry in login_users():
@@ -267,7 +307,7 @@ def do_status(_request):
             "sudo": in_group(entry, "sudo"),
             "keys": keys,
         })
-    return {"ssh": ssh_state(), "users": users}
+    return {"ssh": ssh_state(), "net_gadget": net_gadget_state(), "users": users}
 
 
 def do_ssh(request):
@@ -354,6 +394,7 @@ def do_remove_key(request):
 ACTIONS = {
     "status": do_status,
     "ssh": do_ssh,
+    "net-gadget": do_net_gadget,
     "set-password": do_set_password,
     "add-key": do_add_key,
     "remove-key": do_remove_key,

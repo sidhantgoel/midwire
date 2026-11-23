@@ -1,5 +1,6 @@
 update usr/lib/midwire
 system usr/lib/midwire
+net-gadget usr/lib/midwire
 midwire.sources etc/apt/sources.list.d
 build/midwire-archive-keyring.gpg usr/share/keyrings
 84-midwire-usb-net.rules usr/lib/udev/rules.d
@@ -9,3 +10,6 @@ units/midwire-update-install.service usr/lib/systemd/system
 units/midwire-update-check.timer usr/lib/systemd/system
 units/midwire-system.socket usr/lib/systemd/system
 units/midwire-system@.service usr/lib/systemd/system
+units/midwire-net-gadget.service usr/lib/systemd/system
+units/midwire-net-gadget-dhcp.service usr/lib/systemd/system
+units/usb-proxy.service.d/20-midwire-net-gadget.conf usr/lib/systemd/system/usb-proxy.service.d

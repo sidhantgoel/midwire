@@ -42,13 +42,14 @@ and log in with user name `admin`, password `admin`. The page offers to
 change that password after the first login; do so before leaving the Pi on
 a network you share with others. **https://midwire.local** works too: the
 Pi creates its own certificate on first start, so your browser shows a
-warning once that you have to accept. There are three ways to get there:
+warning once that you have to accept. There are four ways to get there:
 
 | How | What happens |
 |---|---|
 | Ethernet to your router or switch | The Pi gets an address from your network, like any other device. |
 | Ethernet straight to your computer | After about 30 seconds without an answer from a DHCP server, the Pi takes `10.42.1.1` and gives your computer an address. |
 | Wi-Fi hotspot | The Pi creates a network called `Midwire-XXXX` (the last four characters differ per device) and is at `10.42.0.1`. |
+| The USB-C cable itself | While the proxy is stopped, the USB-C port is a network adapter: the computer it is plugged into gets an address and reaches the Pi at `10.42.2.1`. The link drops while the proxy runs. |
 
 The hotspot's password is `midwire-setup` on every new device. The setup
 wizard on the first login asks you to change it, and the page keeps a
@@ -170,6 +171,41 @@ How it works on the device, all of it from the `midwire-base` package:
 
 The device needs internet access for this, so it has to be on Ethernet or
 joined to a Wi-Fi network, not only hosting its hotspot.
+
+## Network over the USB-C cable
+
+The Pi has one USB port that can act as a device, the USB-C port, and it
+can carry one gadget at a time. The proxy needs it while it runs. The rest
+of the time it would sit unused, so `midwire-base` makes it a standard USB
+network adapter (NCM) instead: the computer on the other end of the cable
+sees a network card, gets an address from the Pi, and can open the web page
+at `http://midwire.local` or `http://10.42.2.1`, with no Wi-Fi or Ethernet.
+
+| When | The USB-C port is |
+|---|---|
+| The proxy is stopped | A network adapter. The Pi's end is the interface `midwire0`, `10.42.2.1`. |
+| The proxy is running | The proxied device. The network link is gone; use Wi-Fi or Ethernet to watch the page. |
+| The proxy stops, for any reason | A network adapter again, a few seconds later. |
+
+It is a management link only. The Pi hands out an address and nothing else:
+no gateway and no DNS server. The computer keeps its own internet
+connection, and nothing is routed through the Pi, so the computer being
+tested cannot reach your other networks this way. Windows 11, macOS and
+Linux have the driver built in. Windows 10 loads its built-in one too, on
+version 2004 or later.
+
+The Network tab of the web page has a switch for it. Turn it off if the
+computer you are testing should not see a network adapter when the proxy is
+idle.
+
+How it is put together, all in `midwire-base`:
+
+| Piece | What it does |
+|---|---|
+| `/usr/lib/midwire/net-gadget up` and `down` | Creates the gadget through configfs and binds it to the port, or releases the port. |
+| `midwire-net-gadget.service` | Runs `up` at boot and `down` when stopped. It conflicts with `usb-proxy.service`, so systemd stops it, and so frees the port, before the proxy starts. |
+| `usb-proxy.service.d/20-midwire-net-gadget.conf` | Adds that ordering to the proxy's unit, and starts the network link again once the proxy has stopped. |
+| `midwire-net-gadget-dhcp.service` | A DHCP server for `midwire0` only (dnsmasq), sending no gateway and no DNS. |
 
 ## SSH and login accounts
 

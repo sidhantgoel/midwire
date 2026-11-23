@@ -1,3 +1,14 @@
+midwire-base (0.4.0) unstable; urgency=medium
+
+  * While the proxy is idle, the USB-C port is a USB network adapter (NCM):
+    the computer on the other end of the cable gets an address from the Pi
+    (10.42.2.1) and can open the web UI. It is a management link only, with
+    no gateway and no DNS, so nothing is routed through the Pi. The port is
+    handed to usb-proxy when the proxy starts and taken back when it stops.
+  * The system helper can switch that link on and off.
+
+ -- Sidhant Goel <sidhant@hexcod.in>  Mon, 23 Nov 2026 04:00:00 +0000
+
 midwire-base (0.3.0) unstable; urgency=medium
 
   * Add the system helper behind the web UI's SSH settings: turn SSH on or
